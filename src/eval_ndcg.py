@@ -17,7 +17,7 @@ import json
 import math
 from pathlib import Path
 
-from common import BENCH, load_run_csv, setup_utf8
+from common import BENCH, load_qid_file, load_run_csv, setup_utf8
 
 
 def load_candidates(path: Path) -> dict[str, dict[str, int]]:
@@ -98,6 +98,7 @@ def main():
     p.add_argument("--k", type=int, default=10)
     p.add_argument("--recall", type=int, nargs="*", default=[])
     p.add_argument("--candidates", type=Path, default=BENCH / "candidates.jsonl")
+    p.add_argument("--qids", type=Path, default=None, help="restrict scoring to these query ids")
     args = p.parse_args()
 
     qrels = load_candidates(args.candidates)
@@ -105,6 +106,9 @@ def main():
         run = load_run_csv(args.run)
     else:
         run = load_run_jsonl(args.run)
+    if args.qids is not None:
+        keep = load_qid_file(args.qids)
+        run = {qid: ids for qid, ids in run.items() if qid in keep}
 
     result = evaluate_run(run, qrels, k=args.k, recall_ks=args.recall)
     for key, val in result.items():

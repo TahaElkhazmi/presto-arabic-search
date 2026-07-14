@@ -18,12 +18,14 @@ def main():
     rng.shuffle(qids)
     n_val = int(len(qids) * 0.2)
     val = sorted(qids[:n_val], key=int)
+    dev = sorted(qids[n_val:], key=int)
 
     out = ROOT / "splits"
     out.mkdir(exist_ok=True)
     (out / "val_qids.txt").write_text("\n".join(val) + "\n", encoding="utf-8")
-    print(f"total={len(qids)} val={len(val)} dev={len(qids) - len(val)}")
-    print(f"wrote splits/val_qids.txt (first 5: {val[:5]})")
+    (out / "dev_qids.txt").write_text("\n".join(dev) + "\n", encoding="utf-8")
+    print(f"total={len(qids)} val={len(val)} dev={len(dev)}")
+    print(f"wrote splits/val_qids.txt (first 5: {val[:5]}) and splits/dev_qids.txt")
 
 
 if __name__ == "__main__":
