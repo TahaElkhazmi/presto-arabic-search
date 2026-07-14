@@ -51,6 +51,19 @@ def load_jsonl(path: Path) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
+def load_qid_file(path: Path) -> set[str]:
+    """One query_id per line, e.g. splits/val_qids.txt."""
+    return {line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()}
+
+
+def select_queries(queries: list[dict], qids_file: Path | None, n: int) -> list[dict]:
+    """Filter benchmark queries by an optional qid file, then take the first n (0 = all)."""
+    if qids_file is not None:
+        keep = load_qid_file(qids_file)
+        queries = [q for q in queries if str(q["query_id"]) in keep]
+    return queries[:n] if n else queries
+
+
 def load_qrels(path: Path) -> dict[str, dict[str, int]]:
     """qrels.tsv rows: query_id <tab> iter <tab> item_id <tab> relevance."""
     qrels: dict[str, dict[str, int]] = {}

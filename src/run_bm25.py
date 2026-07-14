@@ -11,26 +11,26 @@ Per COMPETITION_GUIDE.md fact 1, this should score ~0.2407 nDCG@10 on the first
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 from tqdm import tqdm
 
-from common import BENCH, RUNS, load_jsonl, setup_utf8, tokenize, write_run_csv
+from common import BENCH, RUNS, load_jsonl, select_queries, setup_utf8, tokenize, write_run_csv
 
 
 def main():
     setup_utf8()
     p = argparse.ArgumentParser()
     p.add_argument("--n-queries", type=int, default=1000, help="0 = all queries")
+    p.add_argument("--qids", type=Path, default=None, help="optional qid file, e.g. splits/val_qids.txt")
     p.add_argument("--top-k", type=int, default=10)
     p.add_argument("--name", default=None, help="run name (default bm25_first<N>)")
     args = p.parse_args()
 
     corpus = load_jsonl(BENCH / "corpus.jsonl")
-    queries = load_jsonl(BENCH / "queries.jsonl")
-    if args.n_queries:
-        queries = queries[: args.n_queries]
+    queries = select_queries(load_jsonl(BENCH / "queries.jsonl"), args.qids, args.n_queries)
     name = args.name or f"bm25_first{len(queries)}"
     print(f"corpus={len(corpus)} queries={len(queries)} run={name}")
 
@@ -49,7 +49,7 @@ def main():
         run[str(row["query_id"])] = [item_ids[i] for i in top]
 
     RUNS.mkdir(exist_ok=True)
-    write_run_csv(RUNS / f"{name}.csv", run)
+    write_run_csv(RUNS / f"{name}.csv", {q: ids[:10] for q, ids in run.items()})
     with open(RUNS / f"{name}.jsonl", "w", encoding="utf-8") as f:
         for qid, ids in run.items():
             obj = {"query_id": qid, "retrieved": [{"item_id": iid} for iid in ids]}
