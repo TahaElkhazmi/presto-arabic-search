@@ -67,7 +67,7 @@ def main():
     adapter_dir = MODELS / f"{run_name}_adapter"
     merged_dir = MODELS / f"qwen3-arabic-ecom-{run_name}"
 
-    from peft import LoraConfig, PeftModel, TaskType
+    from peft import LoraConfig, TaskType
     from sentence_transformers import (
         SentenceTransformer,
         SentenceTransformerTrainer,
@@ -75,7 +75,8 @@ def main():
     )
     from sentence_transformers.losses import CachedMultipleNegativesRankingLoss
     from sentence_transformers.training_args import BatchSamplers
-    from transformers import AutoModel
+
+    from merge_adapter import merge
 
     dataset = load_triplets(args.smoke)
 
@@ -131,15 +132,10 @@ def main():
     model[0].auto_model.save_pretrained(str(adapter_dir))
     print(f"adapter saved to {adapter_dir}")
 
-    # Merge into a fresh base and save a standalone SentenceTransformer.
-    # Merge in float32: early-training LoRA deltas (~1e-5 per element) sit below
-    # bf16 representational precision and silently round away in a bf16 merge.
-    base_transformer = AutoModel.from_pretrained(str(BASE), torch_dtype=torch.float32)
-    merged = PeftModel.from_pretrained(base_transformer, str(adapter_dir)).merge_and_unload()
-    st = SentenceTransformer(str(BASE), device="cpu", model_kwargs={"torch_dtype": torch.float32})
-    st[0].auto_model = merged
-    st.save_pretrained(str(merged_dir))
-    print(f"merged standalone model saved to {merged_dir}")
+    # Merge at the state-dict level in float32 and verify from disk; both the
+    # PeftModel object-graph route and bf16 merging failed silently (see
+    # merge_adapter.py docstring and FINDINGS.md).
+    merge(BASE, adapter_dir, merged_dir)
 
 
 if __name__ == "__main__":
