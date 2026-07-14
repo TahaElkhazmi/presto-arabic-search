@@ -29,6 +29,7 @@ def main():
     p.add_argument("--top-k", type=int, default=1000)
     p.add_argument("--batch", type=int, default=128)
     p.add_argument("--max-seq", type=int, default=96)
+    p.add_argument("--dtype", choices=["bfloat16", "float32"], default="bfloat16")
     p.add_argument("--name", default=None)
     args = p.parse_args()
 
@@ -43,14 +44,14 @@ def main():
     model = SentenceTransformer(
         str(args.model),
         device="cuda",
-        model_kwargs={"torch_dtype": torch.bfloat16},
+        model_kwargs={"torch_dtype": getattr(torch, args.dtype)},
     )
     model.max_seq_length = args.max_seq
-    print(f"prompts={model.prompts} max_seq={model.max_seq_length}")
+    print(f"prompts={model.prompts} max_seq={model.max_seq_length} dtype={args.dtype}")
 
     cache_dir = DATA / "cache"
     cache_dir.mkdir(exist_ok=True)
-    cache = cache_dir / f"{args.model.name}_len{args.max_seq}_corpus.fp16.npy"
+    cache = cache_dir / f"{args.model.name}_len{args.max_seq}_{args.dtype}_corpus.fp16.npy"
     if cache.exists():
         print(f"corpus embeddings from cache: {cache}")
         doc_emb = np.load(cache)

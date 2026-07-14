@@ -105,7 +105,7 @@ def main():
         per_device_train_batch_size=args.batch,
         learning_rate=args.lr,
         lr_scheduler_type="cosine",
-        warmup_ratio=0.05,
+        warmup_steps=0.05,  # transformers v5: float in (0,1) means warmup ratio
         bf16=True,
         batch_sampler=BatchSamplers.NO_DUPLICATES,
         dataloader_num_workers=0,
@@ -132,9 +132,11 @@ def main():
     print(f"adapter saved to {adapter_dir}")
 
     # Merge into a fresh base and save a standalone SentenceTransformer.
-    base_transformer = AutoModel.from_pretrained(str(BASE), torch_dtype=torch.bfloat16)
+    # Merge in float32: early-training LoRA deltas (~1e-5 per element) sit below
+    # bf16 representational precision and silently round away in a bf16 merge.
+    base_transformer = AutoModel.from_pretrained(str(BASE), torch_dtype=torch.float32)
     merged = PeftModel.from_pretrained(base_transformer, str(adapter_dir)).merge_and_unload()
-    st = SentenceTransformer(str(BASE), device="cpu", model_kwargs={"torch_dtype": torch.bfloat16})
+    st = SentenceTransformer(str(BASE), device="cpu", model_kwargs={"torch_dtype": torch.float32})
     st[0].auto_model = merged
     st.save_pretrained(str(merged_dir))
     print(f"merged standalone model saved to {merged_dir}")
