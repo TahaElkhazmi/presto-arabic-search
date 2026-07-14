@@ -41,12 +41,15 @@ def main():
     print(f"index built in {time.time() - t0:.1f}s")
 
     run: dict[str, list[str]] = {}
+    # Overfetch before sorting: argpartition alone picks an arbitrary subset of a
+    # tie group at the cutoff, but sorting ties by doc index (= low product id
+    # first) is measurably better, so the tie group must be fully inside the pool.
+    pool = min(args.top_k + 512, len(item_ids))
     for row in tqdm(queries, desc="retrieve"):
         scores = bm25.get_scores(tokenize(row["query"]))
-        k = min(args.top_k, len(scores))
-        top = np.argpartition(-scores, k - 1)[:k]
+        top = np.argpartition(-scores, pool - 1)[:pool]
         top = top[np.lexsort((top, -scores[top]))]  # score desc, then doc index asc
-        run[str(row["query_id"])] = [item_ids[i] for i in top]
+        run[str(row["query_id"])] = [item_ids[i] for i in top[: args.top_k]]
 
     RUNS.mkdir(exist_ok=True)
     write_run_csv(RUNS / f"{name}.csv", {q: ids[:10] for q, ids in run.items()})
