@@ -19,9 +19,18 @@ Design per PHASE2_PLAN.md section 3.A and the model card:
 
 Smoke mode (--smoke) trains on 2,000 pairs (~30 steps) to validate the full
 train->adapter save->merge->reload loop before the full run.
+
+v2 (--loss lambda): pointwise BCE on these labels FAILED its gate (FINDINGS
+2026-07-15 night); training positives match the benchmark's judged-relevant names
+only 4.1% of the time on exact-query overlap, so absolute labels are poison while
+relative ones are merely weak (the retriever's MNRL gained +0.047 from the same
+data). LambdaLoss (NDCGLoss2++ scheme) over per-query groups (all positives + all
+surviving hard negatives + 2 random catalog negatives, binary labels) learns only
+the ordering signal.
 """
 
 import argparse
+import random
 import time
 
 import pandas as pd
@@ -32,11 +41,15 @@ from common import BENCH, MODELS, ROOT, TRAIN, load_jsonl, normalize_arabic, set
 from reranker_common import BASE_CE, format_document, format_query
 
 
-def build_pairs(smoke: bool, max_pairs: int, seed: int = 42) -> Dataset:
+def _load_filtered() -> tuple[pd.DataFrame, pd.Series]:
     df = pd.read_parquet(TRAIN / "pairs_with_negatives" / "train.parquet")
     df["pos_norm"] = df["positive_product_name"].map(normalize_arabic)
     df["neg_norm"] = df["negative_product_name"].map(normalize_arabic)
-    pos_names = df.groupby("user_query")["pos_norm"].agg(set)
+    return df, df.groupby("user_query")["pos_norm"].agg(set)
+
+
+def build_pairs(smoke: bool, max_pairs: int, seed: int = 42) -> Dataset:
+    df, pos_names = _load_filtered()
 
     positives = df[["user_query", "positive_product_name"]].drop_duplicates()
     pos_pairs = pd.DataFrame(
@@ -83,18 +96,67 @@ def build_pairs(smoke: bool, max_pairs: int, seed: int = 42) -> Dataset:
     )
 
 
+def build_groups(smoke: bool, n_random: int = 2, seed: int = 42) -> Dataset:
+    df, pos_names = _load_filtered()
+    pos_by_q = (
+        df.drop_duplicates(["user_query", "positive_product_name"])
+        .groupby("user_query")["positive_product_name"]
+        .agg(list)
+    )
+    hard = df[[not (n in pos_names[q]) for q, n in zip(df["user_query"], df["neg_norm"])]]
+    hard = hard.drop_duplicates(["user_query", "negative_product_name"])
+    hard_by_q = hard.groupby("user_query")["negative_product_name"].agg(list)
+
+    corpus_names = [row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")]
+    rng = pd.Series(corpus_names).sample(frac=1.0, random_state=seed).tolist()
+    rnd = random.Random(seed)
+    rows = []
+    i = 0
+    for q in sorted(pos_names.index):
+        # Generic queries can have ~1000 training rows; LambdaLoss pads every batch
+        # to its largest group, so cap groups at 4 pos + 6 hard + n_random docs.
+        pos = pos_by_q[q]
+        if len(pos) > 4:
+            pos = rnd.sample(pos, 4)
+        negs = list(hard_by_q.get(q, []))
+        if len(negs) > 6:
+            negs = rnd.sample(negs, 6)
+        names = pos_names[q]
+        for _ in range(n_random):
+            while normalize_arabic(rng[i % len(rng)]) in names:
+                i += 1
+            negs.append(rng[i % len(rng)])
+            i += 1
+        rows.append((q, pos + negs, [1.0] * len(pos) + [0.0] * len(negs)))
+    sizes = [len(docs) for _, docs, _ in rows]
+    print(
+        f"groups: {len(rows)} queries, docs/group mean {sum(sizes) / len(sizes):.2f} "
+        f"max {max(sizes)}, total pair-forwards {sum(sizes)}"
+    )
+    data = pd.DataFrame(rows, columns=["query", "docs", "labels"])
+    if smoke:
+        data = data.sample(n=2000, random_state=seed)
+        print(f"smoke mode: {len(data)} groups")
+    data = data.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+    data["query"] = data["query"].map(format_query)
+    data["docs"] = data["docs"].map(lambda ds: [format_document(d) for d in ds])
+    return Dataset.from_pandas(data)
+
+
 def main():
     setup_utf8()
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--run-name", default=None, help="default: rerank_v1 or rerank_smoke")
+    p.add_argument("--loss", choices=["bce", "lambda"], default="bce")
     p.add_argument("--max-pairs", type=int, default=200_000, help="0 = all pairs")
     p.add_argument("--mini-batch", type=int, default=16, help="per-device batch size")
     p.add_argument("--accum", type=int, default=4, help="grad accumulation (effective 64)")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--max-seq", type=int, default=160)
     args = p.parse_args()
-    run_name = args.run_name or ("rerank_smoke" if args.smoke else "rerank_v1")
+    base_name = "rerank_v1" if args.loss == "bce" else "rerank_v2"
+    run_name = args.run_name or (f"{base_name}_smoke" if args.smoke else base_name)
     out_dir = ROOT / "outputs" / run_name
     adapter_dir = MODELS / f"{run_name}_adapter"
     merged_dir = MODELS / f"qwen3-reranker-arabic-ecom-{run_name}"
@@ -106,11 +168,14 @@ def main():
         CrossEncoderTrainer,
         CrossEncoderTrainingArguments,
     )
-    from sentence_transformers.cross_encoder.losses import BinaryCrossEntropyLoss
+    from sentence_transformers.cross_encoder.losses import BinaryCrossEntropyLoss, LambdaLoss
 
     from merge_adapter import merge
 
-    dataset = build_pairs(args.smoke, args.max_pairs)
+    if args.loss == "bce":
+        dataset = build_pairs(args.smoke, args.max_pairs)
+    else:
+        dataset = build_groups(args.smoke)
 
     model = CrossEncoder(
         str(BASE_CE), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}
@@ -129,7 +194,10 @@ def main():
     print(f"trainable params: {trainable:,} / {total:,} ({100 * trainable / total:.2f}%)")
     assert not model[0].auto_model.score.weight.requires_grad, "score head must stay frozen"
 
-    loss = BinaryCrossEntropyLoss(model)
+    if args.loss == "bce":
+        loss = BinaryCrossEntropyLoss(model)
+    else:
+        loss = LambdaLoss(model, mini_batch_size=16)
 
     train_args = CrossEncoderTrainingArguments(
         output_dir=str(out_dir),
