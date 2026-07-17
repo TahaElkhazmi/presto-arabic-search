@@ -32,6 +32,7 @@ the ordering signal.
 import argparse
 import random
 import time
+from pathlib import Path
 
 import pandas as pd
 import torch
@@ -96,7 +97,20 @@ def build_pairs(smoke: bool, max_pairs: int, seed: int = 42) -> Dataset:
     )
 
 
-def build_groups(smoke: bool, n_random: int = 2, seed: int = 42) -> Dataset:
+def build_groups(
+    smoke: bool,
+    n_random: int = 2,
+    seed: int = 42,
+    mined_path=None,
+    hard_cap: int = 6,
+) -> Dataset:
+    """v2 groups: <=4 pos + <=hard_cap provided hard + n_random random.
+
+    v3 (mined_path set): additionally appends the retrieval-mined negatives from
+    src/mine_hard_negatives.py (already positive-filtered at mine time), deduped
+    against the group by normalized name. Mined groups reach ~17 docs, so run
+    micro-batch 1 to stay under the ~20 pair-sequence VRAM spill threshold.
+    """
     df, pos_names = _load_filtered()
     pos_by_q = (
         df.drop_duplicates(["user_query", "positive_product_name"])
@@ -107,6 +121,12 @@ def build_groups(smoke: bool, n_random: int = 2, seed: int = 42) -> Dataset:
     hard = hard.drop_duplicates(["user_query", "negative_product_name"])
     hard_by_q = hard.groupby("user_query")["negative_product_name"].agg(list)
 
+    mined_by_q: dict[str, list[str]] = {}
+    if mined_path is not None:
+        mdf = pd.read_parquet(mined_path)
+        mined_by_q = {q: list(m) for q, m in zip(mdf["user_query"], mdf["mined"])}
+        print(f"mined negatives loaded for {len(mined_by_q)} queries from {mined_path}")
+
     corpus_names = [row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")]
     rng = pd.Series(corpus_names).sample(frac=1.0, random_state=seed).tolist()
     rnd = random.Random(seed)
@@ -114,13 +134,20 @@ def build_groups(smoke: bool, n_random: int = 2, seed: int = 42) -> Dataset:
     i = 0
     for q in sorted(pos_names.index):
         # Generic queries can have ~1000 training rows; LambdaLoss pads every batch
-        # to its largest group, so cap groups at 4 pos + 6 hard + n_random docs.
+        # to its largest group, so cap groups at 4 pos + hard_cap hard + mined + n_random.
         pos = pos_by_q[q]
         if len(pos) > 4:
             pos = rnd.sample(pos, 4)
         negs = list(hard_by_q.get(q, []))
-        if len(negs) > 6:
-            negs = rnd.sample(negs, 6)
+        if len(negs) > hard_cap:
+            negs = rnd.sample(negs, hard_cap)
+        if mined_by_q:
+            group_norms = {normalize_arabic(d) for d in negs}
+            for nm in mined_by_q.get(q, []):
+                norm = normalize_arabic(nm)
+                if norm not in group_norms:
+                    group_norms.add(norm)
+                    negs.append(nm)
         names = pos_names[q]
         for _ in range(n_random):
             while normalize_arabic(rng[i % len(rng)]) in names:
@@ -149,13 +176,21 @@ def main():
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--run-name", default=None, help="default: rerank_v1 or rerank_smoke")
     p.add_argument("--loss", choices=["bce", "lambda"], default="bce")
+    p.add_argument("--mined", type=Path, default=None, help="mined-negatives parquet (v3 groups)")
+    p.add_argument("--hard-cap", type=int, default=6, help="provided hard negatives per group")
+    p.add_argument("--n-random", type=int, default=2, help="random catalog negatives per group")
+    p.add_argument("--resume", action="store_true", help="resume from last checkpoint in output dir")
     p.add_argument("--max-pairs", type=int, default=200_000, help="0 = all pairs")
     p.add_argument("--mini-batch", type=int, default=16, help="per-device batch size")
     p.add_argument("--accum", type=int, default=4, help="grad accumulation (effective 64)")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--max-seq", type=int, default=160)
     args = p.parse_args()
-    base_name = "rerank_v1" if args.loss == "bce" else "rerank_v2"
+    if args.mined is not None:
+        assert args.loss == "lambda", "--mined requires --loss lambda"
+        base_name = "rerank_v3"
+    else:
+        base_name = "rerank_v1" if args.loss == "bce" else "rerank_v2"
     run_name = args.run_name or (f"{base_name}_smoke" if args.smoke else base_name)
     out_dir = ROOT / "outputs" / run_name
     adapter_dir = MODELS / f"{run_name}_adapter"
@@ -175,7 +210,9 @@ def main():
     if args.loss == "bce":
         dataset = build_pairs(args.smoke, args.max_pairs)
     else:
-        dataset = build_groups(args.smoke)
+        dataset = build_groups(
+            args.smoke, n_random=args.n_random, mined_path=args.mined, hard_cap=args.hard_cap
+        )
 
     model = CrossEncoder(
         str(BASE_CE), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}
@@ -211,7 +248,7 @@ def main():
         dataloader_num_workers=0,
         logging_steps=25,
         save_strategy="steps",
-        save_steps=500,
+        save_steps=250,
         save_total_limit=2,
         load_best_model_at_end=False,
         report_to=[],
@@ -220,7 +257,7 @@ def main():
 
     trainer = CrossEncoderTrainer(model=model, args=train_args, train_dataset=dataset, loss=loss)
     t0 = time.time()
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True if args.resume else None)
     print(f"training done in {(time.time() - t0) / 60:.1f} min")
 
     adapter_dir.mkdir(parents=True, exist_ok=True)
