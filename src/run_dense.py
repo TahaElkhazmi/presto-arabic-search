@@ -26,6 +26,7 @@ def main():
     p.add_argument("--model", type=Path, default=MODELS / "qwen3-embedding-0.6b-arabic-ecom")
     p.add_argument("--n-queries", type=int, default=1000, help="0 = all queries")
     p.add_argument("--qids", type=Path, default=None, help="optional qid file, e.g. splits/val_qids.txt")
+    p.add_argument("--queries", type=Path, default=BENCH / "queries.jsonl", help="query jsonl file")
     p.add_argument("--top-k", type=int, default=1000)
     p.add_argument("--batch", type=int, default=128)
     p.add_argument("--max-seq", type=int, default=96)
@@ -36,7 +37,7 @@ def main():
     from sentence_transformers import SentenceTransformer
 
     corpus = load_jsonl(BENCH / "corpus.jsonl")
-    queries = select_queries(load_jsonl(BENCH / "queries.jsonl"), args.qids, args.n_queries)
+    queries = select_queries(load_jsonl(args.queries), args.qids, args.n_queries)
     name = args.name or f"dense_first{len(queries)}"
     item_ids = [str(row["item_id"]) for row in corpus]
 
