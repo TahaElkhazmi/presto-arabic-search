@@ -31,24 +31,29 @@ from common import MODELS, ROOT, TRAIN, normalize_arabic, setup_utf8
 BASE = MODELS / "qwen3-embedding-0.6b-arabic-ecom"
 
 
-def load_triplets(smoke: bool) -> Dataset:
-    df = pd.read_parquet(TRAIN / "pairs_with_negatives" / "train.parquet")
+def load_triplets(smoke: bool, triplets: Path | None = None) -> Dataset:
+    if triplets is not None:
+        df = pd.read_parquet(triplets)
+        if "anchor" not in df.columns:
+            df = df.rename(columns={
+                "user_query": "anchor",
+                "positive_product_name": "positive",
+                "negative_product_name": "negative",
+            })
+        print(f"triplets from {triplets}: {len(df)} rows")
+    else:
+        df = pd.read_parquet(TRAIN / "pairs_with_negatives" / "train.parquet").rename(columns={
+            "user_query": "anchor",
+            "positive_product_name": "positive",
+            "negative_product_name": "negative",
+        })
     n0 = len(df)
-    keep = df["positive_product_name"].map(normalize_arabic) != df["negative_product_name"].map(
-        normalize_arabic
-    )
+    keep = df["positive"].map(normalize_arabic) != df["negative"].map(normalize_arabic)
     df = df[keep].reset_index(drop=True)
     print(f"triplets: {n0} -> {len(df)} after false-negative filter ({n0 - len(df)} dropped)")
     if smoke:
         df = df.sample(n=2000, random_state=42).reset_index(drop=True)
         print(f"smoke mode: {len(df)} triplets")
-    df = df.rename(
-        columns={
-            "user_query": "anchor",
-            "positive_product_name": "positive",
-            "negative_product_name": "negative",
-        }
-    )
     return Dataset.from_pandas(df[["anchor", "positive", "negative"]])
 
 
@@ -57,6 +62,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--run-name", default=None, help="default: lora_v1 or lora_smoke")
+    p.add_argument("--triplets", type=Path, default=None, help="custom triplet parquet (v2 data)")
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--mini-batch", type=int, default=8)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -78,7 +84,7 @@ def main():
 
     from merge_adapter import merge
 
-    dataset = load_triplets(args.smoke)
+    dataset = load_triplets(args.smoke, args.triplets)
 
     model = SentenceTransformer(
         str(BASE), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}

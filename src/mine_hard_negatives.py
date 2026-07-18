@@ -36,6 +36,9 @@ def main():
     p.add_argument("--skip-top", type=int, default=3, help="surviving candidates to discard first")
     p.add_argument("--n-mined", type=int, default=8)
     p.add_argument("--queries", type=Path, default=DATA / "teacher" / "train_queries.jsonl")
+    p.add_argument("--positives", type=Path,
+                   default=TRAIN / "pairs_with_negatives" / "train.parquet",
+                   help="parquet with user_query + positive_product_name for the pos-filter")
     p.add_argument("--out", type=Path, default=DATA / "teacher" / "mined_negatives.parquet")
     args = p.parse_args()
     assert len(args.runs) == len(args.weights)
@@ -44,7 +47,7 @@ def main():
     names = {str(row["item_id"]): row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")}
     run_files = [load_run_jsonl(path) for path in args.runs]
 
-    tri = pd.read_parquet(TRAIN / "pairs_with_negatives" / "train.parquet")
+    tri = pd.read_parquet(args.positives)
     tri["pos_norm"] = tri["positive_product_name"].map(normalize_arabic)
     pos_norm_by_q = tri.groupby("user_query")["pos_norm"].agg(set)
 
