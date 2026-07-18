@@ -31,7 +31,7 @@ from common import MODELS, ROOT, TRAIN, normalize_arabic, setup_utf8
 BASE = MODELS / "qwen3-embedding-0.6b-arabic-ecom"
 
 
-def load_triplets(smoke: bool, triplets: Path | None = None) -> Dataset:
+def load_triplets(smoke: bool, triplets: Path | None = None, max_triplets: int = 0) -> Dataset:
     if triplets is not None:
         df = pd.read_parquet(triplets)
         if "anchor" not in df.columns:
@@ -54,6 +54,11 @@ def load_triplets(smoke: bool, triplets: Path | None = None) -> Dataset:
     if smoke:
         df = df.sample(n=2000, random_state=42).reset_index(drop=True)
         print(f"smoke mode: {len(df)} triplets")
+    elif max_triplets and max_triplets < len(df):
+        # subsample by whole query blocks so a query's positives stay together
+        # (in-batch-negative quality is unaffected; NO_DUPLICATES still applies).
+        df = df.sample(n=max_triplets, random_state=42).reset_index(drop=True)
+        print(f"capped to {len(df)} triplets over {df['anchor'].nunique()} queries")
     return Dataset.from_pandas(df[["anchor", "positive", "negative"]])
 
 
@@ -63,6 +68,7 @@ def main():
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--run-name", default=None, help="default: lora_v1 or lora_smoke")
     p.add_argument("--triplets", type=Path, default=None, help="custom triplet parquet (v2 data)")
+    p.add_argument("--max-triplets", type=int, default=0, help="0 = all; cap to fit a time budget")
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--mini-batch", type=int, default=8)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -84,7 +90,7 @@ def main():
 
     from merge_adapter import merge
 
-    dataset = load_triplets(args.smoke, args.triplets)
+    dataset = load_triplets(args.smoke, args.triplets, args.max_triplets)
 
     model = SentenceTransformer(
         str(BASE), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}
