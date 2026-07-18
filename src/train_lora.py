@@ -69,6 +69,7 @@ def main():
     p.add_argument("--run-name", default=None, help="default: lora_v1 or lora_smoke")
     p.add_argument("--triplets", type=Path, default=None, help="custom triplet parquet (v2 data)")
     p.add_argument("--max-triplets", type=int, default=0, help="0 = all; cap to fit a time budget")
+    p.add_argument("--resume", action="store_true", help="resume from last checkpoint in output dir")
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--mini-batch", type=int, default=8)
     p.add_argument("--lr", type=float, default=1e-4)
@@ -136,7 +137,7 @@ def main():
         model=model, args=train_args, train_dataset=dataset, loss=loss
     )
     t0 = time.time()
-    trainer.train()
+    trainer.train(resume_from_checkpoint=True if args.resume else None)
     print(f"training done in {(time.time() - t0) / 60:.1f} min")
 
     # Save adapter only (auto_model has the transformers-native peft integration).
