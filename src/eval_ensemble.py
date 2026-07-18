@@ -4,10 +4,13 @@ final = lam * mean_k(CE_model_k) + (1 - lam) * RRF_prior / rrf_max, low-id ties.
 Each --caches parquet is a per-(model,seq,dtype) score cache written by rerank.py
 (columns qid, iid, score in [0,1]); the ensemble averages the models' scores on
 each pool pair before blending, so it reuses all existing caches at zero GPU cost.
+With --logit-mean the average runs in logit space (clipped to [-12, 12]) and is
+mapped back through sigmoid, so saturated sigmoids do not compress the margins.
 Reports nDCG@10 per lambda on the selected slice (dev to tune, val once).
 """
 
 import argparse
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -27,6 +30,7 @@ def main():
     p.add_argument("--rrf-k", type=int, default=10)
     p.add_argument("--qids", type=Path, default=None)
     p.add_argument("--lam-grid", default="0,0.2,0.25,0.3,0.35,0.4,0.5")
+    p.add_argument("--logit-mean", action="store_true", help="average in logit space, sigmoid back")
     args = p.parse_args()
     assert len(args.runs) == len(args.depths) == len(args.weights)
 
@@ -45,11 +49,21 @@ def main():
 
     rrf_max = sum(args.weights) / (args.rrf_k + 1)
 
-    def ce_mean(qid, iid):
-        return sum(c[(qid, iid)] for c in caches) / len(caches)
+    def logit(s):
+        s = min(max(s, 1e-12), 1.0 - 1e-12)
+        return max(-12.0, min(12.0, math.log(s / (1.0 - s))))
+
+    if args.logit_mean:
+        def ce_mean(qid, iid):
+            m = sum(logit(c[(qid, iid)]) for c in caches) / len(caches)
+            return 1.0 / (1.0 + math.exp(-m))
+    else:
+        def ce_mean(qid, iid):
+            return sum(c[(qid, iid)] for c in caches) / len(caches)
 
     qrels = load_candidates(BENCH / "candidates.jsonl")
-    print(f"{len(qids)} queries, {len(caches)} models\n{'lam':>6s}  {'nDCG@10':>8s}")
+    mode = "logit-mean" if args.logit_mean else "sigmoid-mean"
+    print(f"{len(qids)} queries, {len(caches)} models, {mode}\n{'lam':>6s}  {'nDCG@10':>8s}")
     for lam in [float(x) for x in args.lam_grid.split(",")]:
         run = {}
         for qid in qids:
