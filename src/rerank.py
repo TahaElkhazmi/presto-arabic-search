@@ -97,6 +97,9 @@ def main():
     p.add_argument("--max-seq", type=int, default=160)
     p.add_argument("--dtype", choices=["bfloat16", "float32"], default="bfloat16")
     p.add_argument("--lam", type=float, default=0.5, help="blend: lam*ce + (1-lam)*rrf/rrf_max")
+    p.add_argument("--eps", type=float, default=0.0,
+                   help="near-tie low-id re-sort: chain-group blend scores with gap <= eps, "
+                        "sort each group by ascending id (0 = off)")
     p.add_argument("--lam-grid", default=None, help="comma list; evaluate instead of writing runs")
     p.add_argument("--name", default=None, help="output run name (required unless --lam-grid)")
     p.add_argument("--top-k", type=int, default=10, help="csv truncation depth")
@@ -138,6 +141,21 @@ def main():
 
     rrf_max = sum(args.weights) / (args.rrf_k + 1)
 
+    def eps_resort(scored: list[tuple[float, str]]) -> list[str]:
+        """Chain-group descending scores whose consecutive gap is <= eps; each group
+        sorts by ascending id (the measured low-id prior beats sub-eps score noise)."""
+        out: list[str] = []
+        group: list[tuple[float, str]] = []
+        for s, iid in scored:
+            if group and (group[-1][0] - s) > args.eps:
+                group.sort(key=lambda x: _id_key(x[1]))
+                out.extend(i for _, i in group)
+                group = []
+            group.append((s, iid))
+        group.sort(key=lambda x: _id_key(x[1]))
+        out.extend(i for _, i in group)
+        return out
+
     def blended(lam: float) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for qid in qids:
@@ -146,7 +164,7 @@ def main():
                 for iid in pools[qid]
             ]
             scored.sort(key=lambda x: (-x[0], _id_key(x[1])))
-            out[qid] = [iid for _, iid in scored]
+            out[qid] = eps_resort(scored) if args.eps > 0 else [iid for _, iid in scored]
         return out
 
     if args.lam_grid:
