@@ -26,7 +26,8 @@ from pathlib import Path
 import pandas as pd
 import torch
 
-from common import BENCH, DATA, MODELS, RUNS, load_jsonl, select_queries, setup_utf8, write_run_csv
+from common import (BENCH, DATA, MODELS, RUNS, load_jsonl, normalize_arabic,
+                    select_queries, setup_utf8, write_run_csv)
 from eval_ndcg import evaluate_run, load_candidates, load_run_jsonl
 from reranker_common import format_document, format_query
 
@@ -91,7 +92,11 @@ def main():
     p.add_argument("--weights", type=float, nargs="+", required=True, help="RRF prior weight per run")
     p.add_argument("--rrf-k", type=int, default=10)
     p.add_argument("--model", type=Path, required=True, help="seq-cls CrossEncoder model dir")
+    p.add_argument("--queries", type=Path, default=None,
+                   help="query jsonl (default: benchmark queries.jsonl); e.g. training queries")
     p.add_argument("--qids", type=Path, default=None)
+    p.add_argument("--score-only", action="store_true",
+                   help="populate the score cache, write no runs and evaluate nothing")
     p.add_argument("--n-queries", type=int, default=0, help="0 = all (after qid filter)")
     p.add_argument("--batch", type=int, default=128)
     p.add_argument("--max-seq", type=int, default=160)
@@ -100,15 +105,25 @@ def main():
     p.add_argument("--eps", type=float, default=0.0,
                    help="near-tie low-id re-sort: chain-group blend scores with gap <= eps, "
                         "sort each group by ascending id (0 = off)")
+    p.add_argument("--eps-hi", type=float, default=0.0,
+                   help="adaptive band: use this wider eps when the query's CE top1-top5 "
+                        "margin is below --conf-t (0 = non-adaptive)")
+    p.add_argument("--conf-t", type=float, default=0.10,
+                   help="CE confidence threshold for --eps-hi")
+    p.add_argument("--tie-key", choices=["id", "cont3"], default="id",
+                   help="in-group order: ascending id, or char-3gram query-in-name "
+                        "containment desc then id (adaptive lexical fallback)")
     p.add_argument("--lam-grid", default=None, help="comma list; evaluate instead of writing runs")
     p.add_argument("--name", default=None, help="output run name (required unless --lam-grid)")
     p.add_argument("--top-k", type=int, default=10, help="csv truncation depth")
     args = p.parse_args()
     assert len(args.runs) == len(args.depths) == len(args.weights), "one depth+weight per run"
-    assert args.name or args.lam_grid, "need --name to write runs, or --lam-grid to evaluate"
+    assert args.name or args.lam_grid or args.score_only, \
+        "need --name to write runs, --lam-grid to evaluate, or --score-only"
 
     run_files = [load_run_jsonl(path) for path in args.runs]
-    queries = select_queries(load_jsonl(BENCH / "queries.jsonl"), args.qids, args.n_queries)
+    queries = select_queries(load_jsonl(args.queries or (BENCH / "queries.jsonl")),
+                             args.qids, args.n_queries)
     qids = [str(q["query_id"]) for q in queries]
     qtext = {str(q["query_id"]): q["query"] for q in queries}
     pools, priors = build_pools(run_files, args.depths, args.weights, args.rrf_k, qids)
@@ -121,10 +136,13 @@ def main():
     todo = [(qid, iid) for qid in qids for iid in pools[qid] if (qid, iid) not in cache]
     print(f"cache {cache_path.name}: {len(cache)} scores, {len(todo)} to compute")
 
+    names: dict[str, str] = {}
+    if todo or args.tie_key == "cont3":
+        names = {str(row["item_id"]): row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")}
+
     if todo:
         from sentence_transformers.cross_encoder import CrossEncoder
 
-        names = {str(row["item_id"]): row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")}
         model = CrossEncoder(
             str(args.model),
             device="cuda",
@@ -139,20 +157,47 @@ def main():
             cache[(qid, iid)] = float(s)
         save_cache(cache_path, cache)
 
+    if args.score_only:
+        print(f"score-only: cache now {len(cache)} scores, no runs written")
+        return
+
     rrf_max = sum(args.weights) / (args.rrf_k + 1)
 
-    def eps_resort(scored: list[tuple[float, str]]) -> list[str]:
+    conf: dict[str, float] = {}
+    if args.eps_hi > 0:
+        for qid in qids:
+            ces = sorted((cache[(qid, iid)] for iid in pools[qid]), reverse=True)
+            conf[qid] = ces[0] - ces[4] if len(ces) >= 5 else 1.0
+
+    if args.tie_key == "cont3":
+        from stacker_features import char_ngrams, containment
+
+        qgrams = {qid: char_ngrams(normalize_arabic(qtext[qid]), 3) for qid in qids}
+        ngrams: dict[str, frozenset] = {}
+
+        def cont3(qid: str, iid: str) -> float:
+            name = names[iid]
+            if name not in ngrams:
+                ngrams[name] = char_ngrams(normalize_arabic(name), 3)
+            return containment(qgrams[qid], ngrams[name])
+
+    def group_key(qid: str):
+        if args.tie_key == "cont3":
+            return lambda x: (-cont3(qid, x[1]), _id_key(x[1]))
+        return lambda x: _id_key(x[1])
+
+    def eps_resort(scored: list[tuple[float, str]], eps: float, key) -> list[str]:
         """Chain-group descending scores whose consecutive gap is <= eps; each group
-        sorts by ascending id (the measured low-id prior beats sub-eps score noise)."""
+        sorts by `key` (the in-band prior beats sub-eps score noise)."""
         out: list[str] = []
         group: list[tuple[float, str]] = []
         for s, iid in scored:
-            if group and (group[-1][0] - s) > args.eps:
-                group.sort(key=lambda x: _id_key(x[1]))
+            if group and (group[-1][0] - s) > eps:
+                group.sort(key=key)
                 out.extend(i for _, i in group)
                 group = []
             group.append((s, iid))
-        group.sort(key=lambda x: _id_key(x[1]))
+        group.sort(key=key)
         out.extend(i for _, i in group)
         return out
 
@@ -164,7 +209,11 @@ def main():
                 for iid in pools[qid]
             ]
             scored.sort(key=lambda x: (-x[0], _id_key(x[1])))
-            out[qid] = eps_resort(scored) if args.eps > 0 else [iid for _, iid in scored]
+            eps = args.eps
+            if args.eps_hi > 0 and conf.get(qid, 1.0) < args.conf_t:
+                eps = args.eps_hi
+            out[qid] = (eps_resort(scored, eps, group_key(qid)) if eps > 0
+                        else [iid for _, iid in scored])
         return out
 
     if args.lam_grid:
