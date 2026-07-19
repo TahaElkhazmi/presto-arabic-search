@@ -92,6 +92,9 @@ def main():
     p.add_argument("--weights", type=float, nargs="+", required=True, help="RRF prior weight per run")
     p.add_argument("--rrf-k", type=int, default=10)
     p.add_argument("--model", type=Path, required=True, help="seq-cls CrossEncoder model dir")
+    p.add_argument("--cache-name", default=None,
+                   help="override the score-cache stem (default rerank_<model>_len<seq>_<dtype>); "
+                        "read/write a counterfactual cache without touching the live one")
     p.add_argument("--queries", type=Path, default=None,
                    help="query jsonl (default: benchmark queries.jsonl); e.g. training queries")
     p.add_argument("--qids", type=Path, default=None)
@@ -134,7 +137,8 @@ def main():
     print(f"{len(qids)} queries, {n_pairs} candidate pairs "
           f"(mean pool {n_pairs / max(len(qids), 1):.1f})")
 
-    cache_path = DATA / "cache" / f"rerank_{args.model.name}_len{args.max_seq}_{args.dtype}.parquet"
+    cache_stem = args.cache_name or f"rerank_{args.model.name}_len{args.max_seq}_{args.dtype}"
+    cache_path = DATA / "cache" / f"{cache_stem}.parquet"
     cache = load_cache(cache_path)
     todo = [(qid, iid) for qid in qids for iid in pools[qid] if (qid, iid) not in cache]
     print(f"cache {cache_path.name}: {len(cache)} scores, {len(todo)} to compute")
