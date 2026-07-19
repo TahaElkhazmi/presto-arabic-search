@@ -131,6 +131,9 @@ def main():
     p.add_argument("--n-queries", type=int, default=0, help="0=all; subsample for dry run")
     p.add_argument("--dry-run", action="store_true", help="small slice + dummy CE, verify pipeline")
     p.add_argument("--out", type=Path, default=DATA.parent / "models" / "stacker_v1.txt")
+    p.add_argument("--label-union", action="store_true",
+                   help="merge positives/train.parquet into the label set "
+                        "(coverage 10%% -> ~17%%; that file's noise sank retriever v2, gate hard)")
     args = p.parse_args()
 
     n_q = 200 if args.dry_run else args.n_queries
@@ -162,6 +165,11 @@ def main():
     pos_by_text: dict[str, set] = {}
     for q, pos in zip(tri["user_query"], tri["positive_product_name"]):
         pos_by_text.setdefault(q, set()).add(normalize_arabic(pos))
+    if args.label_union:
+        ptr = pd.read_parquet(DATA.parent / "data" / "training" / "positives" / "train.parquet")
+        for q, pos in zip(ptr["user_query"], ptr["positive_product_name"]):
+            pos_by_text.setdefault(q, set()).add(normalize_arabic(pos))
+        print("label union: positives/train merged into the label set")
 
     if args.ce_cache and args.ce_cache.exists():
         cdf = pd.read_parquet(args.ce_cache)
