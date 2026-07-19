@@ -113,6 +113,9 @@ def main():
     p.add_argument("--tie-key", choices=["id", "cont3"], default="id",
                    help="in-group order: ascending id, or char-3gram query-in-name "
                         "containment desc then id (adaptive lexical fallback)")
+    p.add_argument("--strip-fillers", action="store_true",
+                   help="drop Libyan-dialect filler/request tokens from the query before "
+                        "the cont3 key (ablated-safe set; +0.0032 benchmark, cont3-only)")
     p.add_argument("--lam-grid", default=None, help="comma list; evaluate instead of writing runs")
     p.add_argument("--name", default=None, help="output run name (required unless --lam-grid)")
     p.add_argument("--top-k", type=int, default=10, help="csv truncation depth")
@@ -172,7 +175,20 @@ def main():
     if args.tie_key == "cont3":
         from stacker_features import char_ngrams, containment
 
-        qgrams = {qid: char_ngrams(normalize_arabic(qtext[qid]), 3) for qid in qids}
+        # ablated-safe Libyan-dialect filler/request tokens (post normalize_arabic);
+        # inert-and-risky common words (من لو حق ...) deliberately excluded.
+        DIALECT_FILLERS = {normalize_arabic(w) for w in (
+            "للدار", "عطيني", "هاتلي", "ندور", "محتاج",
+            "نبي", "ابي", "اريد", "بدي", "عايز", "ابغي")}
+
+        def query_text_for_cont3(qid: str) -> str:
+            qn = normalize_arabic(qtext[qid])
+            if not args.strip_fillers:
+                return qn
+            kept = [t for t in qn.split() if t not in DIALECT_FILLERS]
+            return " ".join(kept) if kept else qn  # never strip to empty
+
+        qgrams = {qid: char_ngrams(query_text_for_cont3(qid), 3) for qid in qids}
         ngrams: dict[str, frozenset] = {}
 
         def cont3(qid: str, iid: str) -> float:
