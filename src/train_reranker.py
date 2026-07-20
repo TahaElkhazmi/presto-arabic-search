@@ -97,6 +97,25 @@ def build_pairs(smoke: bool, max_pairs: int, seed: int = 42) -> Dataset:
     )
 
 
+def build_pairs_external(path, smoke: bool, max_pairs: int, seed: int = 42) -> Dataset:
+    """BCE pairs from an external parquet (cols q, d, label) for Stage-1 warm-up."""
+    df = pd.read_parquet(path)
+    n = 2000 if smoke else (max_pairs if max_pairs else len(df))
+    if n < len(df):
+        df = df.sample(n=n, random_state=seed)
+    df = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+    print(f"external pairs: {len(df)} (label mean {df['label'].mean():.3f}) from {path.name}")
+    return Dataset.from_pandas(
+        pd.DataFrame(
+            {
+                "query": df["q"].map(format_query),
+                "document": df["d"].map(format_document),
+                "label": df["label"].astype("float32"),
+            }
+        )
+    )
+
+
 def build_groups(
     smoke: bool,
     n_random: int = 2,
@@ -185,6 +204,12 @@ def main():
     p.add_argument("--accum", type=int, default=4, help="grad accumulation (effective 64)")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--max-seq", type=int, default=160)
+    p.add_argument("--base", type=Path, default=None,
+                   help="init/merge base dir (default stock BASE_CE); Stage-2 warm-start points here")
+    p.add_argument("--pairs-parquet", type=Path, default=None,
+                   help="external BCE pairs parquet (cols q,d,label); bypasses the e-commerce "
+                        "pair builder (Lever 6 Stage-1 Arabic-IR warm-up)")
+    p.add_argument("--epochs", type=int, default=1)
     args = p.parse_args()
     if args.mined is not None:
         assert args.loss == "lambda", "--mined requires --loss lambda"
@@ -207,15 +232,20 @@ def main():
 
     from merge_adapter import merge
 
+    base = args.base or BASE_CE
+
     if args.loss == "bce":
-        dataset = build_pairs(args.smoke, args.max_pairs)
+        if args.pairs_parquet is not None:
+            dataset = build_pairs_external(args.pairs_parquet, args.smoke, args.max_pairs)
+        else:
+            dataset = build_pairs(args.smoke, args.max_pairs)
     else:
         dataset = build_groups(
             args.smoke, n_random=args.n_random, mined_path=args.mined, hard_cap=args.hard_cap
         )
 
     model = CrossEncoder(
-        str(BASE_CE), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}
+        str(base), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}
     )
     model[0].max_seq_length = args.max_seq
 
@@ -238,7 +268,7 @@ def main():
 
     train_args = CrossEncoderTrainingArguments(
         output_dir=str(out_dir),
-        num_train_epochs=1,
+        num_train_epochs=args.epochs,
         per_device_train_batch_size=args.mini_batch,
         gradient_accumulation_steps=args.accum,
         learning_rate=args.lr,
@@ -268,9 +298,9 @@ def main():
     assert any(k.endswith(".lora_A.weight") for k in ad_keys), "no lora tensors in adapter file"
     print(f"adapter saved to {adapter_dir} ({len(ad_keys)} tensors)")
 
-    merge(BASE_CE, adapter_dir, merged_dir)
+    merge(base, adapter_dir, merged_dir)
 
-    base_score = load_file(str(BASE_CE / "model.safetensors"))["score.weight"]
+    base_score = load_file(str(base / "model.safetensors"))["score.weight"]
     merged_score = load_file(str(merged_dir / "model.safetensors"))["score.weight"]
     assert torch.equal(base_score, merged_score), "frozen score head changed during merge"
     print("score head verified identical to base")
