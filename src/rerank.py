@@ -20,6 +20,7 @@ the selected query slice (tune on dev qids, verify once on val qids).
 
 import argparse
 import json
+import math
 import time
 from pathlib import Path
 
@@ -105,6 +106,10 @@ def main():
     p.add_argument("--max-seq", type=int, default=160)
     p.add_argument("--dtype", choices=["bfloat16", "float32"], default="bfloat16")
     p.add_argument("--lam", type=float, default=0.5, help="blend: lam*ce + (1-lam)*rrf/rrf_max")
+    p.add_argument("--temperature", type=float, default=1.0,
+                   help="rescale cached CE scores via delogit/T/resigmoid before use "
+                        "(confidence margin AND the blend); the on-disk score cache is "
+                        "never mutated, so any future T reuses the same raw scores")
     p.add_argument("--eps", type=float, default=0.0,
                    help="near-tie low-id re-sort: chain-group blend scores with gap <= eps, "
                         "sort each group by ascending id (0 = off)")
@@ -168,12 +173,21 @@ def main():
         print(f"score-only: cache now {len(cache)} scores, no runs written")
         return
 
+    def rescale(raw: float, T: float) -> float:
+        s = min(max(raw, 1e-12), 1.0 - 1e-12)
+        logit = math.log(s / (1.0 - s))
+        return 1.0 / (1.0 + math.exp(-logit / T))
+
+    ce = cache if args.temperature == 1.0 else {
+        k: rescale(v, args.temperature) for k, v in cache.items()
+    }
+
     rrf_max = sum(args.weights) / (args.rrf_k + 1)
 
     conf: dict[str, float] = {}
     if args.eps_hi > 0:
         for qid in qids:
-            ces = sorted((cache[(qid, iid)] for iid in pools[qid]), reverse=True)
+            ces = sorted((ce[(qid, iid)] for iid in pools[qid]), reverse=True)
             conf[qid] = ces[0] - ces[4] if len(ces) >= 5 else 1.0
 
     if args.tie_key == "cont3":
@@ -225,7 +239,7 @@ def main():
         out: dict[str, list[str]] = {}
         for qid in qids:
             scored = [
-                (lam * cache[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max, iid)
+                (lam * ce[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max, iid)
                 for iid in pools[qid]
             ]
             scored.sort(key=lambda x: (-x[0], _id_key(x[1])))
