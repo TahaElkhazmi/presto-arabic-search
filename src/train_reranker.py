@@ -122,6 +122,7 @@ def build_groups(
     seed: int = 42,
     mined_path=None,
     hard_cap: int = 6,
+    raw: bool = False,
 ) -> Dataset:
     """v2 groups: <=4 pos + <=hard_cap provided hard + n_random random.
 
@@ -129,6 +130,9 @@ def build_groups(
     src/mine_hard_negatives.py (already positive-filtered at mine time), deduped
     against the group by normalized name. Mined groups reach ~17 docs, so run
     micro-batch 1 to stay under the ~20 pair-sequence VRAM spill threshold.
+
+    raw=True: skip format_query/format_document (for non-Qwen cross-encoders
+    that take raw [query, passage] pairs, e.g. bge-reranker).
     """
     df, pos_names = _load_filtered()
     pos_by_q = (
@@ -184,8 +188,9 @@ def build_groups(
         data = data.sample(n=2000, random_state=seed)
         print(f"smoke mode: {len(data)} groups")
     data = data.sample(frac=1.0, random_state=seed).reset_index(drop=True)
-    data["query"] = data["query"].map(format_query)
-    data["docs"] = data["docs"].map(lambda ds: [format_document(d) for d in ds])
+    if not raw:
+        data["query"] = data["query"].map(format_query)
+        data["docs"] = data["docs"].map(lambda ds: [format_document(d) for d in ds])
     return Dataset.from_pandas(data)
 
 
