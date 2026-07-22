@@ -116,6 +116,25 @@ def build_pairs_external(path, smoke: bool, max_pairs: int, seed: int = 42) -> D
     )
 
 
+def build_groups_external(path, smoke: bool, seed: int = 42) -> Dataset:
+    """LambdaLoss groups from a pre-built parquet (cols query, docs, labels), e.g.
+    the Play-2 synthetic curriculum. Same template formatting and shuffling as
+    build_groups; group composition is entirely the builder's responsibility."""
+    data = pd.read_parquet(path)
+    data["docs"] = data["docs"].map(list)
+    data["labels"] = data["labels"].map(list)
+    sizes = data["docs"].map(len)
+    print(f"external groups: {len(data)} from {path.name}, docs/group mean "
+          f"{sizes.mean():.2f} max {sizes.max()}, total pair-forwards {sizes.sum()}")
+    if smoke:
+        data = data.sample(n=min(2000, len(data)), random_state=seed)
+        print(f"smoke mode: {len(data)} groups")
+    data = data.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+    data["query"] = data["query"].map(format_query)
+    data["docs"] = data["docs"].map(lambda ds: [format_document(d) for d in ds])
+    return Dataset.from_pandas(data)
+
+
 def build_groups(
     smoke: bool,
     n_random: int = 2,
@@ -214,6 +233,9 @@ def main():
     p.add_argument("--pairs-parquet", type=Path, default=None,
                    help="external BCE pairs parquet (cols q,d,label); bypasses the e-commerce "
                         "pair builder (Lever 6 Stage-1 Arabic-IR warm-up)")
+    p.add_argument("--groups-parquet", type=Path, default=None,
+                   help="external LambdaLoss groups parquet (cols query,docs,labels); bypasses "
+                        "the e-commerce group builder (Play 2 Stage-1.5 synthetic curriculum)")
     p.add_argument("--epochs", type=int, default=1)
     args = p.parse_args()
     if args.mined is not None:
@@ -245,9 +267,12 @@ def main():
         else:
             dataset = build_pairs(args.smoke, args.max_pairs)
     else:
-        dataset = build_groups(
-            args.smoke, n_random=args.n_random, mined_path=args.mined, hard_cap=args.hard_cap
-        )
+        if args.groups_parquet is not None:
+            dataset = build_groups_external(args.groups_parquet, args.smoke)
+        else:
+            dataset = build_groups(
+                args.smoke, n_random=args.n_random, mined_path=args.mined, hard_cap=args.hard_cap
+            )
 
     model = CrossEncoder(
         str(base), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}
@@ -302,6 +327,16 @@ def main():
     ad_keys = list(load_file(str(ad_file)))
     assert any(k.endswith(".lora_A.weight") for k in ad_keys), "no lora tensors in adapter file"
     print(f"adapter saved to {adapter_dir} ({len(ad_keys)} tensors)")
+
+    # Free the trained model before the merge: merge() reloads base/adapter/merged
+    # fp32 state dicts from disk (~7 GB commit peak) and does NOT use the in-memory
+    # model, so keeping it resident only risks the Windows paging-file/commit crash
+    # (OS error 1455) seen on this 15.7 GB box. Correctness is unaffected.
+    import gc
+
+    del model, trainer, loss
+    gc.collect()
+    torch.cuda.empty_cache()
 
     merge(base, adapter_dir, merged_dir)
 
