@@ -317,7 +317,50 @@ def main():
 
     trainer = CrossEncoderTrainer(model=model, args=train_args, train_dataset=dataset, loss=loss)
     t0 = time.time()
-    trainer.train(resume_from_checkpoint=True if args.resume else None)
+
+    if args.resume:
+        # ST/transformers cannot reconstruct a native-LoRA-injected model from a
+        # checkpoint dir that has no config.json (documented 2026-07-20/21: it
+        # mis-reads adapter_config.json as the model's PretrainedConfig). Everything
+        # else in the checkpoint - optimizer, scheduler, RNG, step count - is intact,
+        # so we take over EXACTLY the broken step and let the Trainer do the rest.
+        #
+        # The load is verified tensor-by-tensor against the file on disk before
+        # training continues; a partial or mis-mapped load raises instead of silently
+        # producing a half-restored model (the same failure class as the ST 5.6
+        # save_pretrained trap, section 3.2).
+        from transformers.trainer_utils import get_last_checkpoint
+
+        ckpt = get_last_checkpoint(str(out_dir))
+        assert ckpt, f"--resume given but no checkpoint found in {out_dir}"
+        print(f"resuming from {ckpt}")
+
+        def _load_adapter_verified(resume_path, model=None):
+            from peft import get_peft_model_state_dict, set_peft_model_state_dict
+
+            target = (model if model is not None else trainer.model)[0].auto_model
+            saved = load_file(str(Path(resume_path) / "adapter_model.safetensors"))
+            set_peft_model_state_dict(target, saved)
+
+            back = get_peft_model_state_dict(target)
+            missing = [k for k in saved if k not in back]
+            bad = [
+                k for k in saved
+                if k in back and not torch.equal(back[k].detach().cpu().to(saved[k].dtype),
+                                                 saved[k].cpu())
+            ]
+            assert not missing, (
+                f"resume load incomplete: {len(missing)}/{len(saved)} adapter tensors "
+                f"absent after load, e.g. {missing[:3]}")
+            assert not bad, (
+                f"resume load corrupted: {len(bad)}/{len(saved)} adapter tensors differ "
+                f"from the checkpoint file, e.g. {bad[:3]}")
+            print(f"resume verified: {len(saved)} adapter tensors match the checkpoint exactly")
+
+        trainer._load_from_checkpoint = _load_adapter_verified
+        trainer.train(resume_from_checkpoint=ckpt)
+    else:
+        trainer.train()
     print(f"training done in {(time.time() - t0) / 60:.1f} min")
 
     adapter_dir.mkdir(parents=True, exist_ok=True)
