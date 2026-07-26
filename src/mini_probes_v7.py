@@ -19,6 +19,7 @@ import math
 import pandas as pd
 
 from common import DATA, ROOT, load_qid_file, normalize_arabic, setup_utf8
+from grid_search_prior import set_prior
 from probe_harness import DIALECT_FILLERS, Harness, rescale
 from stacker_features import char_ngrams, containment
 
@@ -32,8 +33,9 @@ STACK = dict(lam=0.60, eps=0.010, eps_hi=0.040, conf_t=0.15, key="cont3")
 def main():
     qids = sorted(load_qid_file(ROOT / "splits" / "dev_final2000.txt"))
     h = Harness(qids, T=2.6, cache_stem=V7)
+    set_prior(h, 60, (3.0, 1.0))  # the LIVE composition (LB 0.66738), not the old k=10 2:1
     base = h.evaluate(**STACK)
-    print(f"BASELINE (submitted config): {base:.4f}\n", flush=True)
+    print(f"BASELINE (live config k=60 3:1): {base:.4f}\n", flush=True)
 
     def log(name, s):
         print(f"  {name:46s}: {s:.4f}  ({s - base:+.4f})", flush=True)
