@@ -91,7 +91,8 @@ def stream_topk(path: Path, k: int, qid_set: set[str] | None = None) -> dict[str
 
 class Harness:
     def __init__(self, qids: list[str], T: float = 2.3, depth: int = 100,
-                 cache_stem: str = "rerank_qwen3-reranker-arabic-ecom-rerank_v6warm_len160_bfloat16"):
+                 cache_stem: str = "rerank_qwen3-reranker-arabic-ecom-rerank_v6warm_len160_bfloat16",
+                 weights: list[float] | None = None, rrf_k: int = 10):
         self.qids = list(qids)
         qid_set = set(self.qids)
         self.queries, self.names, self.qrels = shared_data()
@@ -99,8 +100,8 @@ class Harness:
         self.run_bm25 = stream_topk(ROOT / "runs" / "bm25_all.jsonl", depth, qid_set)
         self.run_dense = stream_topk(ROOT / "runs" / "dense_lora_v1_all.jsonl", depth, qid_set)
 
-        self.rrf_k = 10
-        self.weights = [2.0, 1.0]
+        self.rrf_k = rrf_k
+        self.weights = list(weights) if weights else [2.0, 1.0]
         self.pools: dict[str, list[str]] = {}
         self.priors: dict[str, dict[str, float]] = {}
         for qid in self.qids:
