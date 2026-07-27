@@ -123,9 +123,18 @@ def main():
                         "margin (K=3) with a higher --conf-t routes a differently-shaped "
                         "set of queries into the wide band; measured +0.0009 benchmark "
                         "at K=3/conf-t 0.30 (FINDINGS 2026-07-26)")
-    p.add_argument("--tie-key", choices=["id", "cont3"], default="id",
-                   help="in-group order: ascending id, or char-3gram query-in-name "
-                        "containment desc then id (adaptive lexical fallback)")
+    p.add_argument("--tie-key", choices=["id", "cont3", "cont3prefix"], default="id",
+                   help="in-group order: ascending id; char-3gram query-in-name "
+                        "containment desc then id (adaptive lexical fallback); or "
+                        "cont3prefix, which inserts 'title starts with the stripped "
+                        "query' between the two. Containment saturates at 1.0 as soon "
+                        "as a title contains every query gram regardless of what else "
+                        "it says, so on saturated queries the key was falling through "
+                        "to ascending id across ~90 candidates that are NOT identical "
+                        "strings (57.3 distinct titles on average). The prefix test is "
+                        "binary, so it partitions the tie group and the low-id prior "
+                        "still orders each half rather than being overwritten "
+                        "(+0.0123 full benchmark, +0.0121 untouched)")
     p.add_argument("--strip-fillers", action="store_true",
                    help="drop Libyan-dialect filler/request tokens from the query before "
                         "the cont3 key (ablated-safe set; +0.0032 benchmark, cont3-only)")
@@ -154,7 +163,7 @@ def main():
     print(f"cache {cache_path.name}: {len(cache)} scores, {len(todo)} to compute")
 
     names: dict[str, str] = {}
-    if todo or args.tie_key == "cont3":
+    if todo or args.tie_key in ("cont3", "cont3prefix"):
         names = {str(row["item_id"]): row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")}
 
     if todo:
@@ -196,7 +205,7 @@ def main():
             k = args.conf_topk
             conf[qid] = ces[0] - ces[k - 1] if len(ces) >= k else 1.0
 
-    if args.tie_key == "cont3":
+    if args.tie_key in ("cont3", "cont3prefix"):
         from stacker_features import char_ngrams, containment
 
         # ablated-safe Libyan-dialect filler/request tokens (post normalize_arabic);
@@ -221,7 +230,20 @@ def main():
                 ngrams[name] = char_ngrams(normalize_arabic(name), 3)
             return containment(qgrams[qid], ngrams[name])
 
+        qtext_stripped = {qid: query_text_for_cont3(qid) for qid in qids}
+        normed: dict[str, str] = {}
+
+        def starts_with_query(qid: str, iid: str) -> float:
+            name = names[iid]
+            n = normed.get(name)
+            if n is None:
+                n = normed[name] = normalize_arabic(name)
+            return 1.0 if n.startswith(qtext_stripped[qid]) else 0.0
+
     def group_key(qid: str):
+        if args.tie_key == "cont3prefix":
+            return lambda x: (-cont3(qid, x[1]), -starts_with_query(qid, x[1]),
+                              _id_key(x[1]))
         if args.tie_key == "cont3":
             return lambda x: (-cont3(qid, x[1]), _id_key(x[1]))
         return lambda x: _id_key(x[1])
