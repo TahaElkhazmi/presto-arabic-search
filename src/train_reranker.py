@@ -339,7 +339,14 @@ def main():
             from peft import get_peft_model_state_dict, set_peft_model_state_dict
 
             target = (model if model is not None else trainer.model)[0].auto_model
-            saved = load_file(str(Path(resume_path) / "adapter_model.safetensors"))
+            raw = load_file(str(Path(resume_path) / "adapter_model.safetensors"))
+            # save_pretrained writes peft's WRAPPED key convention
+            # ("base_model.model.<path>"), but a transformers-native add_adapter model
+            # uses the bare path. Without this remap set_peft_model_state_dict matches
+            # nothing and silently no-ops - verified against a real checkpoint by
+            # src/test_resume_load.py, which failed this exact way before the fix.
+            _PFX = "base_model.model."
+            saved = {(k[len(_PFX):] if k.startswith(_PFX) else k): v for k, v in raw.items()}
             set_peft_model_state_dict(target, saved)
 
             back = get_peft_model_state_dict(target)
