@@ -1,0 +1,107 @@
+"""Re-tune the stack for the new prefix key, per the project's own standing rule.
+
+Every constant in the live stack (T=2.6, lam=0.60, eps=0.010, eps_hi=0.040,
+conf_t=0.30) was fitted when the in-band key was (containment desc, id asc). The key
+is now (containment desc, starts-with-query desc, id asc), which changes what the eps
+band actually does: the band used to hand ambiguous queries to a key that fell through
+to raw id, and now hands them to one that discriminates. A band sized for a weak
+in-band key is probably mis-sized for a stronger one.
+
+This is the same move that recovered +0.005 after the v7synth swap, and the rule it
+follows is the project's most expensive lesson: re-tune every downstream constant
+BEFORE judging a change.
+
+Discipline carried over from those campaigns:
+  - tune on one half of the clean holdout, confirm on the other half, then the full
+    benchmark and the untouched arbiter;
+  - require an INTERIOR optimum, beaten on both sides, not a grid-edge value;
+  - prefer a top-k consensus configuration over the raw argmax, because dev-argmax
+    inflation on this project measures 3-4x.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent))
+
+from common import BENCH, ROOT, load_jsonl, load_qid_file, normalize_arabic, setup_utf8
+from eval_ndcg import ndcg_at_k
+from probe_harness import DIALECT_FILLERS, Harness
+
+setup_utf8()
+
+V7 = "rerank_qwen3-reranker-arabic-ecom-rerank_v7synth_len160_bfloat16"
+GRID_T = (2.0, 2.6, 3.2)
+GRID_LAM = (0.50, 0.60, 0.70)
+GRID_EPS = (0.005, 0.010, 0.020)
+GRID_HI = (0.020, 0.040, 0.060)
+GRID_CT = (0.20, 0.30, 0.40)
+LIVE = (2.6, 0.60, 0.010, 0.040, 0.30)
+
+
+def main():
+    qids = sorted(load_qid_file(ROOT / "splits" / "holdout_remainder8012.txt"), key=int)
+    import random
+    shuf = list(qids)
+    random.Random(77).shuffle(shuf)
+    tune = sorted(shuf[: len(shuf) // 2], key=int)
+    conf = sorted(shuf[len(shuf) // 2:], key=int)
+
+    norm = {str(r["item_id"]): normalize_arabic(r["name"])
+            for r in load_jsonl(BENCH / "corpus.jsonl")}
+
+    results = []
+    for T in GRID_T:
+        h = Harness(qids, T=T, cache_stem=V7, weights=[3.0, 1.0], rrf_k=60)
+        for q in h.qids:
+            v = sorted((h.ce[(q, i)] for i in h.pools[q]), reverse=True)
+            h.conf[q] = v[0] - v[2] if len(v) >= 3 else 1.0
+        qstr = {}
+        for q in h.qids:
+            t = [x for x in normalize_arabic(h.queries[q]).split()
+                 if x not in DIALECT_FILLERS]
+            qstr[q] = " ".join(t) if t else normalize_arabic(h.queries[q])
+        keyf = (lambda q, i: h.cont3(q, i) * 1000.0
+                + (1.0 if norm[i].startswith(qstr[q]) else 0.0))
+        qrels = h.qrels
+
+        def sc(qs, **cfg):
+            r = h.build_run(qids=qs, key=keyf, **cfg)
+            v = [ndcg_at_k(r[q], qrels[q], 10) for q in qs if q in r]
+            return sum(v) / len(v)
+
+        for lam in GRID_LAM:
+            for eps in GRID_EPS:
+                for hi in GRID_HI:
+                    for ct in GRID_CT:
+                        s = sc(tune, lam=lam, eps=eps, eps_hi=hi, conf_t=ct)
+                        results.append((s, T, lam, eps, hi, ct))
+        print(f"  T={T} done ({len(results)} configs)", flush=True)
+        del h
+
+    results.sort(reverse=True)
+    print(f"\nTOP 12 of {len(results)} configs on the tune half")
+    print(f"  {'nDCG':>9s}{'T':>6s}{'lam':>6s}{'eps':>7s}{'eps_hi':>8s}{'conf_t':>8s}")
+    for r in results[:12]:
+        print(f"  {r[0]:>9.6f}{r[1]:>6.1f}{r[2]:>6.2f}{r[3]:>7.3f}{r[4]:>8.3f}{r[5]:>8.2f}")
+
+    live_tune = next((r[0] for r in results if tuple(r[1:]) == LIVE), None)
+    print(f"\n  live config on tune half: {live_tune:.6f}")
+    print(f"  best  config on tune half: {results[0][0]:.6f} "
+          f"({results[0][0] - live_tune:+.6f})")
+
+    # boundary audit over the top 12
+    top = results[:12]
+    for name, i, grid in (("T", 1, GRID_T), ("lam", 2, GRID_LAM), ("eps", 3, GRID_EPS),
+                          ("eps_hi", 4, GRID_HI), ("conf_t", 5, GRID_CT)):
+        vals = [r[i] for r in top]
+        mode = max(set(vals), key=vals.count)
+        edge = "EDGE" if mode in (min(grid), max(grid)) else "interior"
+        print(f"  {name:<8s} consensus {mode} ({vals.count(mode)}/12)  {edge}")
+
+    print(f"\n  NOTE: an EDGE consensus means the optimum is unbracketed and the grid")
+    print(f"  must be extended before the value is trusted, per prior campaigns.")
+
+
+if __name__ == "__main__":
+    main()

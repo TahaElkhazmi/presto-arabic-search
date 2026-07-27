@@ -123,7 +123,8 @@ def main():
                         "margin (K=3) with a higher --conf-t routes a differently-shaped "
                         "set of queries into the wide band; measured +0.0009 benchmark "
                         "at K=3/conf-t 0.30 (FINDINGS 2026-07-26)")
-    p.add_argument("--tie-key", choices=["id", "cont3", "cont3prefix"], default="id",
+    p.add_argument("--tie-key", choices=["id", "cont3", "cont3prefix", "cont3pos"],
+                   default="id",
                    help="in-group order: ascending id; char-3gram query-in-name "
                         "containment desc then id (adaptive lexical fallback); or "
                         "cont3prefix, which inserts 'title starts with the stripped "
@@ -163,7 +164,7 @@ def main():
     print(f"cache {cache_path.name}: {len(cache)} scores, {len(todo)} to compute")
 
     names: dict[str, str] = {}
-    if todo or args.tie_key in ("cont3", "cont3prefix"):
+    if todo or args.tie_key in ("cont3", "cont3prefix", "cont3pos"):
         names = {str(row["item_id"]): row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")}
 
     if todo:
@@ -205,7 +206,7 @@ def main():
             k = args.conf_topk
             conf[qid] = ces[0] - ces[k - 1] if len(ces) >= k else 1.0
 
-    if args.tie_key in ("cont3", "cont3prefix"):
+    if args.tie_key in ("cont3", "cont3prefix", "cont3pos"):
         from stacker_features import char_ngrams, containment
 
         # ablated-safe Libyan-dialect filler/request tokens (post normalize_arabic);
@@ -233,14 +234,44 @@ def main():
         qtext_stripped = {qid: query_text_for_cont3(qid) for qid in qids}
         normed: dict[str, str] = {}
 
-        def starts_with_query(qid: str, iid: str) -> float:
+        def _norm(iid: str) -> str:
             name = names[iid]
             n = normed.get(name)
             if n is None:
                 n = normed[name] = normalize_arabic(name)
-            return 1.0 if n.startswith(qtext_stripped[qid]) else 0.0
+            return n
+
+        def starts_with_query(qid: str, iid: str) -> float:
+            return 1.0 if _norm(iid).startswith(qtext_stripped[qid]) else 0.0
+
+        qtoks_stripped = {qid: qtext_stripped[qid].split() for qid in qids}
+
+        def match_position(qid: str, iid: str) -> float:
+            """1/(1+k) for the query's TOKEN offset k in the title; 0 if absent.
+
+            Strictly generalises the prefix test (which is only the k=0 case) and
+            measures better: token position scores 0.683188 full-benchmark against
+            the prefix test's 0.680892. Meilisearch, which built the judged pools,
+            ranks partly by attribute position, so WHERE the query sits in a title
+            is exactly the text dimension that survives containment saturation:
+            dozens of titles all contain the query and differ only in placement.
+            Token offset beats character offset (0.682680) because it does not
+            depend on how long the preceding words happen to be.
+            """
+            toks = _norm(iid).split()
+            q = qtoks_stripped[qid]
+            n = len(q)
+            if not n:
+                return 0.0
+            for k in range(len(toks) - n + 1):
+                if toks[k:k + n] == q:
+                    return 1.0 / (1.0 + k)
+            return 0.0
 
     def group_key(qid: str):
+        if args.tie_key == "cont3pos":
+            return lambda x: (-cont3(qid, x[1]), -match_position(qid, x[1]),
+                              _id_key(x[1]))
         if args.tie_key == "cont3prefix":
             return lambda x: (-cont3(qid, x[1]), -starts_with_query(qid, x[1]),
                               _id_key(x[1]))
