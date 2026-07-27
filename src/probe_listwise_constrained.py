@@ -78,19 +78,38 @@ def main():
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--model", type=Path, default=MODELS / "qwen3-reranker-4b-seq-cls")
     p.add_argument("--out", type=Path, default=ROOT / "outputs" / "probe_listwise_constrained.json")
+    p.add_argument("--qids-file", type=Path, default=None,
+                   help="use this split instead of minting dev_listwise200")
+    p.add_argument("--conf-max", type=float, default=0.0,
+                   help="restrict to the low-confidence BAND: keep only queries whose "
+                        "CE top1-top3 margin is below this (0 = no filter). conf<0.05 "
+                        "holds 63%% of all remaining loss, which is where the only "
+                        "mechanism with a ceiling above the gap has to operate")
+    p.add_argument("--chat", action="store_true",
+                   help="wrap the prompt in the tokenizer chat template (needed for a "
+                        "real instruct model; the reranker checkpoint wants raw text)")
     args = p.parse_args()
 
-    qids = mint_split(args.n)
-    if args.limit:
-        qids = qids[: args.limit]
-    print(f"probe on {len(qids)} queries, K={args.k}, select={args.select}\n")
+    qids = (sorted(load_qid_file(args.qids_file), key=int) if args.qids_file
+            else mint_split(args.n))
+    print(f"probe on {len(qids)} candidate queries, K={args.k}, select={args.select}")
 
     # ---- baseline: the live shipped stack (LB 0.66861) ----
     h = Harness(qids, T=2.6, cache_stem=V7, weights=[3.0, 1.0], rrf_k=60)
     for qid in h.qids:  # live margin is top1-top3
         v = sorted((h.ce[(qid, i)] for i in h.pools[qid]), reverse=True)
         h.conf[qid] = v[0] - v[2] if len(v) >= 3 else 1.0
-    cand = h.build_run(topn=args.k, **LIVE)
+
+    if args.conf_max > 0:
+        band = [q for q in qids if h.conf[q] < args.conf_max]
+        print(f"band filter conf < {args.conf_max}: {len(band)}/{len(qids)} queries kept")
+        qids = band
+    if args.limit:
+        qids = qids[: args.limit]
+    h.qids = list(qids)
+    print(f"probing {len(qids)} queries\n")
+
+    cand = h.build_run(topn=args.k, qids=qids, **LIVE)
     base = {q: ids[:10] for q, ids in cand.items()}
     wide = {q for q in qids if h.conf[q] < LIVE["conf_t"]}
     print(f"wide band (conf < {LIVE['conf_t']}): {len(wide)}/{len(qids)} queries")
@@ -129,6 +148,12 @@ def main():
         k = len(cands)
         lines = "\n".join(f"[{letters[i]}] {h.names[iid]}" for i, iid in enumerate(cands))
         prompt = PROMPT.format(query=h.queries[qid], candidates=lines)
+        if args.chat:
+            # instruct models expect their template; the trailing "الترتيب:" stays
+            # inside the user turn so the natural first token is a label letter
+            prompt = tok.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False, add_generation_prompt=True)
         enc = tok(prompt, return_tensors="pt").to("cuda")
 
         with torch.no_grad():
