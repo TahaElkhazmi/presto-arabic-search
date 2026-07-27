@@ -22,7 +22,11 @@ from common import MODELS, ROOT, setup_utf8
 
 setup_utf8()
 
-DEST = MODELS / "qwen3-4b-instruct-2507"
+# The shared cache, NOT a local_dir: only here do partials get a stable
+# blobs/<etag>.incomplete name that survives a kill and resumes. Restarting a
+# local_dir download starts each shard over from zero (see fetch_instruct_model.py).
+DEST = (Path.home() / ".cache" / "huggingface" / "hub"
+        / "models--Qwen--Qwen3-4B-Instruct-2507")
 EXPECT_GB = 7.5          # snapshot is ~8 GB; treat >=7.5 with no .incomplete as done
 STALL_SECS = 120         # no growth for this long means the transfer is dead
 POLL = 15
@@ -38,7 +42,7 @@ def complete() -> bool:
     if not DEST.exists():
         return False
     incomplete = list(DEST.rglob("*.incomplete"))
-    shards = list(DEST.glob("model-*.safetensors"))
+    shards = list((DEST / "snapshots").rglob("model-*.safetensors"))
     return not incomplete and len(shards) >= 3 and size_gb() >= EXPECT_GB
 
 

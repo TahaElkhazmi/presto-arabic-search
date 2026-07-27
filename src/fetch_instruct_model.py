@@ -30,20 +30,24 @@ DEST = MODELS / "qwen3-4b-instruct-2507"
 
 
 def main():
-    print(f"downloading {REPO} -> {DEST}")
-    # max_workers=1: parallel shard fetches stalled repeatedly on this connection
-    # (shard 3 froze at 95 MB while 1 and 2 never started). Serial is slower in
-    # theory and far more reliable here. Resumes from whatever is already cached.
+    print(f"downloading {REPO} into the shared HF cache")
+    # NOTE, learned the expensive way: do NOT pass local_dir here.
+    # With local_dir, partials are named <hash>.<etag>.<RANDOM>.incomplete, so a
+    # killed download cannot be resumed and every retry restarts from zero. That
+    # burned ~7.6 GB into five orphaned copies of one shard before it was spotted.
+    # The shared cache uses a stable blobs/<etag>.incomplete name, which resumes
+    # correctly across interruptions. Load the model from the returned path.
+    # max_workers=1 because parallel shard fetches stall repeatedly on this link.
     for attempt in range(1, 41):
         try:
             path = snapshot_download(
                 repo_id=REPO,
-                local_dir=str(DEST),
                 max_workers=1,
                 allow_patterns=["*.json", "*.safetensors", "*.txt", "tokenizer*",
                                 "merges.txt", "vocab.json"],
             )
             print(f"done: {path}")
+            (MODELS / "qwen3-4b-instruct-2507.path").write_text(path, encoding="utf-8")
             return
         except Exception as e:  # transient network failures are expected here
             print(f"attempt {attempt} failed: {type(e).__name__}: {e}", flush=True)
