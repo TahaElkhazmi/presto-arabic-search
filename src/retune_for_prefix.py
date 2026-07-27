@@ -61,8 +61,18 @@ def main():
             t = [x for x in normalize_arabic(h.queries[q]).split()
                  if x not in DIALECT_FILLERS]
             qstr[q] = " ".join(t) if t else normalize_arabic(h.queries[q])
-        keyf = (lambda q, i: h.cont3(q, i) * 1000.0
-                + (1.0 if norm[i].startswith(qstr[q]) else 0.0))
+        qtoks = {q: qstr[q].split() for q in h.qids}
+        ntok = {i: n.split() for i, n in norm.items()}
+
+        def matchpos(q, i):
+            toks, qq = ntok[i], qtoks[q]
+            n = len(qq)
+            for k in range(len(toks) - n + 1):
+                if toks[k:k + n] == qq:
+                    return 1.0 / (1.0 + k)
+            return 0.0
+
+        keyf = lambda q, i: h.cont3(q, i) * 1000.0 + matchpos(q, i)
         qrels = h.qrels
 
         def sc(qs, **cfg):
