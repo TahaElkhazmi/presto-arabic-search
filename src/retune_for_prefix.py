@@ -31,11 +31,23 @@ from probe_harness import DIALECT_FILLERS, Harness
 setup_utf8()
 
 V7 = "rerank_qwen3-reranker-arabic-ecom-rerank_v7synth_len160_bfloat16"
-GRID_T = (2.0, 2.6, 3.2)
-GRID_LAM = (0.50, 0.60, 0.70)
-GRID_EPS = (0.005, 0.010, 0.020)
-GRID_HI = (0.020, 0.040, 0.060)
-GRID_CT = (0.20, 0.30, 0.40)
+# PASS 2. Pass 1 put four of five dimensions on a grid EDGE (T at the max, eps at the
+# max, eps_hi at the max, conf_t at the min), which by the standing protocol means the
+# optimum is unbracketed and the value cannot be trusted. Each range is extended in the
+# direction the pass-1 consensus pushed, so every dimension can be beaten on BOTH sides.
+# PASS 3, the last one. Across passes 1 and 2, eps_hi (0.060 beaten on both sides),
+# conf_t (0.10-0.20) and eps (0.020-0.030) are now genuinely bracketed. T and lam are
+# not: T sat at the max both times and lam collapsed to the grid minimum in 9 of the
+# top 12, so both ranges are opened in the direction the consensus pushed. Higher T and
+# lower lam are the same mechanism from two sides - lean less on the cross-encoder and
+# route more candidates into a tie-break key that is now strong.
+# Stopping after this pass by pre-registered discipline: a fourth wave on the same tune
+# half starts fitting the split, which is the failure documented five times in FINDINGS.
+GRID_T = (3.2, 4.4, 5.5, 7.0)
+GRID_LAM = (0.30, 0.40, 0.50, 0.60)
+GRID_EPS = (0.020, 0.030)
+GRID_HI = (0.050, 0.060, 0.070)
+GRID_CT = (0.10, 0.20)
 LIVE = (2.6, 0.60, 0.010, 0.040, 0.30)
 
 
@@ -96,6 +108,34 @@ def main():
         print(f"  {r[0]:>9.6f}{r[1]:>6.1f}{r[2]:>6.2f}{r[3]:>7.3f}{r[4]:>8.3f}{r[5]:>8.2f}")
 
     live_tune = next((r[0] for r in results if tuple(r[1:]) == LIVE), None)
+    if live_tune is None:
+        # the live point can fall outside an extended grid; score it explicitly so
+        # every pass still reports a delta against the shipped configuration
+        hL = Harness(qids, T=LIVE[0], cache_stem=V7, weights=[3.0, 1.0], rrf_k=60)
+        for q in hL.qids:
+            v = sorted((hL.ce[(q, i)] for i in hL.pools[q]), reverse=True)
+            hL.conf[q] = v[0] - v[2] if len(v) >= 3 else 1.0
+        qsL = {}
+        for q in hL.qids:
+            t = [x for x in normalize_arabic(hL.queries[q]).split()
+                 if x not in DIALECT_FILLERS]
+            qsL[q] = (" ".join(t) if t else normalize_arabic(hL.queries[q])).split()
+        ntokL = {i: n.split() for i, n in norm.items()}
+
+        def mpL(q, i):
+            toks, qq = ntokL[i], qsL[q]
+            n = len(qq)
+            for k in range(len(toks) - n + 1):
+                if toks[k:k + n] == qq:
+                    return 1.0 / (1.0 + k)
+            return 0.0
+
+        r = hL.build_run(qids=tune, lam=LIVE[1], eps=LIVE[2], eps_hi=LIVE[3],
+                         conf_t=LIVE[4],
+                         key=lambda q, i: hL.cont3(q, i) * 1000.0 + mpL(q, i))
+        v = [ndcg_at_k(r[q], hL.qrels[q], 10) for q in tune if q in r]
+        live_tune = sum(v) / len(v)
+        del hL
     print(f"\n  live config on tune half: {live_tune:.6f}")
     print(f"  best  config on tune half: {results[0][0]:.6f} "
           f"({results[0][0] - live_tune:+.6f})")

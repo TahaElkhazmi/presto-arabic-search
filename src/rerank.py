@@ -136,6 +136,15 @@ def main():
                         "binary, so it partitions the tie group and the low-id prior "
                         "still orders each half rather than being overwritten "
                         "(+0.0123 full benchmark, +0.0121 untouched)")
+    p.add_argument("--pos-bonus", type=float, default=0.0,
+                   help="add this multiple of the token match-position score directly "
+                        "to the BLEND, not just to the in-group tie-break. Match "
+                        "position otherwise only orders candidates inside an eps "
+                        "near-tie chain, so a strong signal is confined to a narrow "
+                        "decision; a bounded additive term lets it also reorder "
+                        "candidates whose blend scores are close but not in the same "
+                        "chain. Requires --tie-key cont3pos. Swept to a bracketed "
+                        "optimum at 0.35 (0.200 and 0.600 both worse)")
     p.add_argument("--strip-fillers", action="store_true",
                    help="drop Libyan-dialect filler/request tokens from the query before "
                         "the cont3 key (ablated-safe set; +0.0032 benchmark, cont3-only)")
@@ -146,6 +155,8 @@ def main():
     assert len(args.runs) == len(args.depths) == len(args.weights), "one depth+weight per run"
     assert args.name or args.lam_grid or args.score_only, \
         "need --name to write runs, --lam-grid to evaluate, or --score-only"
+    assert not args.pos_bonus or args.tie_key == "cont3pos", \
+        "--pos-bonus needs --tie-key cont3pos (it reuses that key's position score)"
 
     run_files = [load_run_jsonl(path) for path in args.runs]
     queries = select_queries(load_jsonl(args.queries or (BENCH / "queries.jsonl")),
@@ -297,10 +308,17 @@ def main():
     def blended(lam: float) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for qid in qids:
-            scored = [
-                (lam * ce[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max, iid)
-                for iid in pools[qid]
-            ]
+            if args.pos_bonus:
+                scored = [
+                    (lam * ce[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max
+                     + args.pos_bonus * match_position(qid, iid), iid)
+                    for iid in pools[qid]
+                ]
+            else:
+                scored = [
+                    (lam * ce[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max, iid)
+                    for iid in pools[qid]
+                ]
             scored.sort(key=lambda x: (-x[0], _id_key(x[1])))
             eps = args.eps
             if args.eps_hi > 0 and conf.get(qid, 1.0) < args.conf_t:
