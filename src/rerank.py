@@ -118,6 +118,11 @@ def main():
                         "margin is below --conf-t (0 = non-adaptive)")
     p.add_argument("--conf-t", type=float, default=0.10,
                    help="CE confidence threshold for --eps-hi")
+    p.add_argument("--conf-topk", type=int, default=5,
+                   help="confidence margin is CE top1 minus top-K (default 5). A sharper "
+                        "margin (K=3) with a higher --conf-t routes a differently-shaped "
+                        "set of queries into the wide band; measured +0.0009 benchmark "
+                        "at K=3/conf-t 0.30 (FINDINGS 2026-07-26)")
     p.add_argument("--tie-key", choices=["id", "cont3"], default="id",
                    help="in-group order: ascending id, or char-3gram query-in-name "
                         "containment desc then id (adaptive lexical fallback)")
@@ -188,7 +193,8 @@ def main():
     if args.eps_hi > 0:
         for qid in qids:
             ces = sorted((ce[(qid, iid)] for iid in pools[qid]), reverse=True)
-            conf[qid] = ces[0] - ces[4] if len(ces) >= 5 else 1.0
+            k = args.conf_topk
+            conf[qid] = ces[0] - ces[k - 1] if len(ces) >= k else 1.0
 
     if args.tie_key == "cont3":
         from stacker_features import char_ngrams, containment
