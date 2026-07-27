@@ -217,7 +217,7 @@ class Harness:
                   znorm=False, lam_fn=None, id_bonus=0.0, bonus_fn=None,
                   extra_votes=None, extra_weight=0.0,
                   dup_cap=0, dup_cap_wide_only=False,
-                  pin_top=0, pin_wide_only=False, qids=None) -> dict[str, list[str]]:
+                  pin_top=0, pin_wide_only=False, qids=None, topn=10) -> dict[str, list[str]]:
         qids = qids or self.qids
         rrf_max = (sum(self.weights) + extra_weight) / (self.rrf_k + 1)
 
@@ -275,7 +275,7 @@ class Harness:
                         kept.append(iid)
                 order = kept + overflow
 
-            run[qid] = order[:10]
+            run[qid] = order[:topn]
         return run
 
     def score(self, run: dict[str, list[str]]) -> float:
