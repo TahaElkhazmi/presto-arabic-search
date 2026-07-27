@@ -11,7 +11,7 @@ This report describes the system that reached and held rank 1 on the public lead
 The final system is a three-layer pipeline: hybrid lexical-dense candidate retrieval fused with reciprocal-rank fusion, a three-stage fine-tuned Qwen3 cross-encoder re-ranker, and a calibrated post-processing layer that resolves the re-ranker's low-confidence zone with character-level lexical evidence and dialect-aware query normalization.
 Beyond the architecture, we believe the main contribution of this work is methodological.
 Every change was measured against a local evaluation harness that predicted the public leaderboard to within +-0.0014 across all twelve submissions, and every candidate improvement passed a pre-registered gate on pristine held-out splits before being shipped.
-Three findings shaped the outcome: (1) the provided training labels are only 8-17% grounded in the scoring catalog, which invalidates absolute-relevance objectives and most supervised feature learning; (2) synthetically generated, catalog-grounded training data beat the provided labels at teaching fine-grained product discrimination, producing the largest single model improvement of the project; and (3) a pipeline's auxiliary machinery silently mis-sized for an older, weaker model can absorb most of a better model's value - systematically re-fitting every calibrated component to the final model recovered +0.005 nDCG that appeared structurally lost.
+Four findings shaped the outcome: (1) the provided training labels are only 8-17% grounded in the scoring catalog, which invalidates absolute-relevance objectives and most supervised feature learning; (2) synthetically generated, catalog-grounded training data beat the provided labels at teaching fine-grained product discrimination, producing the largest single model improvement of the project; (3) a pipeline's auxiliary machinery silently mis-sized for an older, weaker model can absorb most of a better model's value - systematically re-fitting every calibrated component to the final model recovered +0.005 nDCG that appeared structurally lost; and (4) a re-ranker embedded in a score blend is not optimised by maximising its standalone ranking quality - our final experiment produced a model that ordered candidates measurably better in isolation yet made the complete system worse, which is the clearest demonstration in this project of why end-to-end measurement cannot be replaced by a component proxy.
 The full experimental record, including ten diagnosed negative results, is presented alongside the positive path.
 
 ---
@@ -156,6 +156,13 @@ We consider these as informative as the positive path; each entry states the hyp
 9. **Post-processing guard rails and re-mixes** (duplicate-name capping, pinning the blend's head against band demotion, per-query score z-normalization, rank-consensus Borda voting, SKU/unit conflict penalties, global id bonuses, trained-positive-name priors, adaptive per-query lambda) - eighteen mechanisms probed on pristine splits, all flat or negative at population level; several (dup-capping at -0.13) produced strong mechanistic evidence, e.g. that duplicate-name "flooding" of the top-10 is actually harvesting graded sibling items rather than wasting slots.
 10. **Label canonicalization via string similarity** - a nearest-neighbor audit showed the ungrounded 92% of training positives are absent products, not variants; a canonicalization dictionary could only add wrong labels from lookalike SKUs.
    Closed by measurement before any engineering was spent.
+11. **Graded-relevance synthetic curriculum** - the final experiment, and the most instructive failure.
+   The synthetic generator of Section 4.2 was limited by binary labels: to avoid false negatives it discarded every neighbour the query could not discriminate from the positive, which is precisely the same-brand and size-variant set that error analysis blamed for the dominant residual error mode.
+   Since the listwise objective computes gains as `2^label - 1` and accepts continuous labels, we rebuilt the curriculum with four grades (source / size-variant / close-variant / unrelated), keeping the previously-discarded confusables and teaching them as "nearly as good".
+   The data hypothesis validated decisively: on 32,959 synthetic queries whose text exactly matches a benchmark query, benchmark relevance rose monotonically with the assigned grade (35.4% / 25.9% / 22.8% / 6.0%), confirming the discarded items were roughly four times more likely to be relevant than the negatives the binary version retained.
+   The model improved too: pure ranking quality rose to 0.6254 from 0.6204, a sixth consecutive generation gain.
+   **Yet the complete system got worse** (-0.0017 with each model at its own re-tuned operating point, temperature bracketed on both sides to rule out a grid artifact).
+   Section 7.2 analyses why; this is the finding we would most want to carry to another project.
 
 ---
 
@@ -174,18 +181,50 @@ Re-fitting each component against the final model, one campaign at a time on fre
 Each shift tells the same story from a different angle: **a strong model wants a soft prior and narrow guard rails; machinery tuned for a weak model actively fights a strong one.**
 Decision record: any future model swap in this pipeline must re-tune every downstream constant before the swap's value is judged.
 
-### 7.2 Engineering-reliability decisions
+### 7.2 Ordering quality is not blend utility: when a six-generation proxy failed
+
+For six model generations we gated re-ranker work on *pure ordering quality* - the model's standalone nDCG over the candidate pool, measured independently of the blend, the temperature, and the post-processing.
+It is a clean signal: temperature-invariant, prior-independent, and it tracked every real improvement we made (0.524 pointwise, 0.561 zero-shot, 0.593 listwise, 0.603 warm-started, 0.621 synthetic curriculum).
+The graded-curriculum model (negative result 11) broke that relationship for the first time: **ordering improved to 0.6254 while the complete system regressed by 0.0017**.
+
+The diagnostic signature is the blend weight.
+Re-tuned from scratch for the new model, the optimal weight on the cross-encoder *fell* from 0.55 to 0.45: presented with a demonstrably better orderer, the tuned composition chose to trust it **less**.
+Two mechanisms explain this, and both generalise beyond this competition.
+
+First, ordering quality and blend utility optimise different things.
+nDCG over a full pool rewards getting the entire permutation right; a score blend needs *decisive separation at the very top*, because that is the only region where the cross-encoder can outvote the retrieval prior.
+Training on graded targets spreads the model's probability mass across degrees of relevance - exactly what improves whole-pool ordering - and in doing so softens the margin between rank 1 and ranks 2-3, which is the margin the blend actually consumes.
+
+Second, and more specific to mature pipelines: the distinctions the graded model learned were ones the system had **already solved elsewhere**.
+The gradations concentrate on near-duplicate and size-variant products, and by this point the post-processing layer resolved those cases with the low-id prior and the character-n-gram containment band - deterministic rules that are more reliable there than a learned score.
+The model therefore traded away top-end decisiveness in exchange for information the pipeline did not need, which is the same redundancy that killed the adaptive-lambda and third-voter experiments (negative results 8 and 9): a component that duplicates an existing mechanism cannot add value, and pays for the attempt.
+
+The methodological conclusion is stronger than the specific result.
+A component proxy stays trustworthy only while the component's failure mode is the system's binding constraint; once the pipeline's other layers absorb that failure mode, the proxy and the objective silently decouple.
+Because our post-processing had grown steadily more capable, the proxy expired without warning.
+Practically: any model gate should include an end-to-end measurement at the candidate's *own re-tuned* operating point - which is also the lesson of Section 7.1, arriving from the opposite direction.
+Section 7.1 says a better model can look worthless when measured through stale machinery; this section says a better *component* can be genuinely worse for the system even when measured correctly.
+Both argue that the system, re-tuned, is the only unit of evaluation that can be trusted.
+
+### 7.3 Engineering-reliability decisions
 
 Several silent-failure traps cost real time and produced standing defenses worth recording.
 
 - **Verify artifacts, not metrics.** A framework save bug silently wrote base-model weights instead of merged weights; a coincidental +0.0009 "improvement" (fp32-vs-bf16 inference noise) masked it for hours.
   All merges now happen at the state-dict level in fp32, are reloaded from disk, and asserted numerically equal to base + delta before any result is trusted; bf16 merging is additionally forbidden because early-training LoRA deltas sit below bf16 resolution and round away entirely.
+- **A verification suite must be able to fail.** Repairing checkpoint resume for the adapter-injected re-ranker produced a textbook case.
+  The saved checkpoint uses the adapter library's *wrapped* key convention (`base_model.model.<path>`) while the natively-injected model exposes bare paths, so the load matched nothing and silently restored zero weights.
+  Our first two assertions - every checkpoint tensor is present after loading, and every loaded tensor equals the file - **both passed**, vacuously: with no keys matching, the comparison sets were empty.
+  Only a third assertion caught it: *did the weights change relative to a freshly-initialised adapter?*
+  Had we shipped on the first two checks, every "resumed" run would have silently restarted from scratch while reporting success - the same silent-no-op failure class as the save bug above, which is precisely why the third check was written before the first was trusted.
+  With the key remapping in place all 392 tensors are present, exact, and changed; long re-ranker runs are now genuinely resumable.
+  The general rule: an assertion that cannot distinguish "correct" from "nothing happened" is not a test.
 - **Checkpoint everything that runs for hours.** Multi-hour scoring writes atomic per-chunk checkpoints; a real power cut mid-run cost zero completed work and resumed with a re-run of the same command.
   Training-side resume for the re-ranker recipe was found broken (checkpoint reconstruction bug) and, rather than risk a silent partial load, was declared unusable: long runs are treated as non-interruptible and scheduled accordingly.
 - **Measure the cheap thing first.** Contamination-before-training (five minutes) saved a second poisoned multi-hour run; a 39-minute cloud probe of the 4B teacher killed a multi-day distillation plan; a token-prevalence count (0/2,000 SKU queries) killed a feature family in an afternoon.
 - **Windows/consumer-GPU specifics** - VRAM spill silently degrading step time 3x beyond ~20 concurrent pair-sequences, dataloader workers pinned to zero, UTF-8 console discipline for Arabic - are documented in the repository and materially affected training recipes (micro-batch 2 with accumulation 32 exists because of the spill threshold).
 
-### 7.3 Submission discipline
+### 7.4 Submission discipline
 
 Submissions were treated as expensive measurements, not attempts.
 Each was locally predicted first; the twelve-for-twelve calibration record is the receipt.
@@ -222,4 +261,8 @@ Roughly 8% of queries still score zero despite a 0.76 pool ceiling on those quer
 
 The system's final margin was built from three compounding disciplines rather than any single silver bullet: an evaluation harness trustworthy enough to make offline experiments decisive; training objectives chosen to respect - and eventually synthesize around - a fundamentally mis-grounded label set; and the late recognition that a pipeline's calibrated machinery encodes assumptions about model quality that must be re-fitted when the model changes.
 The negative results were as load-bearing as the positive ones: each closed vein redirected effort cheaply, and several (contamination measurement, ensemble deadness, the absorption mis-diagnosis and its correction) produced transferable rules we expect to reuse well beyond this competition.
-Had the competition continued, the next experiments were already designed: a confidence-gated cascade with a fine-tuned 4B re-ranker aimed at the wide-band queries that hold 58% of the remaining loss, and scaled variants of the synthetic curriculum, whose first iteration was the strongest training-side result of the project.
+The final experiment is a fitting summary of the whole project's character.
+Extending the synthetic curriculum to graded relevance was well-motivated by error analysis, its data hypothesis validated cleanly, and it produced a measurably better re-ranker - which nonetheless made the system worse, and was therefore not shipped.
+Recognising that required a habit built over the preceding two weeks: measure the system rather than the component, at the component's own re-tuned operating point, on data no tuning has touched.
+The result cost a night of computation and returned no leaderboard points, but it retired a proxy we had trusted for six model generations, which we regard as the better trade.
+Work that remains designed but unrun: a confidence-gated cascade with a fine-tuned 4B re-ranker aimed at the wide-band queries holding 58% of the residual loss, and a listwise re-ranker that scores candidates jointly rather than independently - the latter aimed squarely at the same-brand variant confusions that both the error analysis and the graded-curriculum experiment identify as the binding constraint.
