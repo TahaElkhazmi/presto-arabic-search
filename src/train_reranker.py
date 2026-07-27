@@ -237,6 +237,16 @@ def main():
                    help="external LambdaLoss groups parquet (cols query,docs,labels); bypasses "
                         "the e-commerce group builder (Play 2 Stage-1.5 synthetic curriculum)")
     p.add_argument("--epochs", type=int, default=1)
+    p.add_argument("--quantize", action="store_true",
+                   help="load the base in 4-bit NF4 for QLoRA. Required for the 4B on "
+                        "an 8 GB card: bf16 alone does not fit, whereas 4-bit loads at "
+                        "3.87/8.59 GB and trains at 7.24 GB peak with gradient "
+                        "checkpointing (measured, src/smoke_4b_qlora.py). Has no effect "
+                        "on the 0.6B path, which stays bf16 and byte-comparable to "
+                        "every previous generation")
+    p.add_argument("--grad-ckpt", action="store_true",
+                   help="gradient checkpointing; pairs with --quantize to keep the 4B "
+                        "inside 8 GB, at roughly 30 percent extra step time")
     args = p.parse_args()
     if args.mined is not None:
         assert args.loss == "lambda", "--mined requires --loss lambda"
@@ -274,10 +284,24 @@ def main():
                 args.smoke, n_random=args.n_random, mined_path=args.mined, hard_cap=args.hard_cap
             )
 
-    model = CrossEncoder(
-        str(base), device="cuda", model_kwargs={"torch_dtype": torch.bfloat16}
-    )
+    model_kwargs = {"torch_dtype": torch.bfloat16}
+    if args.quantize:
+        from transformers import BitsAndBytesConfig
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+    model = CrossEncoder(str(base), device="cuda", model_kwargs=model_kwargs)
     model[0].max_seq_length = args.max_seq
+
+    if args.quantize:
+        from peft import prepare_model_for_kbit_training
+        model[0].auto_model = prepare_model_for_kbit_training(
+            model[0].auto_model, use_gradient_checkpointing=args.grad_ckpt)
+    elif args.grad_ckpt:
+        model[0].auto_model.gradient_checkpointing_enable()
 
     peft_config = LoraConfig(
         r=16,
