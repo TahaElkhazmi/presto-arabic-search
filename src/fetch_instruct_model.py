@@ -19,6 +19,13 @@ import os
 # from the partial file rather than starting over.
 os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "30")
 
+# huggingface_hub 1.23's xet backend writes RANDOM-suffixed partials even in the
+# shared cache, so a killed transfer can never resume: three partials of the same
+# 4 GB shard accumulated here (.355ceb15, .72a115fd, .c72fcf0e) and each restart
+# began at zero. Disabling xet restores the legacy http path, whose stable
+# blobs/<etag>.incomplete name resumes correctly across interruptions.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
 from huggingface_hub import snapshot_download
 
 from common import MODELS, setup_utf8

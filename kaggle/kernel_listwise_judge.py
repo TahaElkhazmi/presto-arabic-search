@@ -22,6 +22,7 @@ of the kind that rules out T4 training.
 
 import json
 import os
+import random
 import string
 import subprocess
 import sys
@@ -30,9 +31,18 @@ import time
 import pandas as pd
 import torch
 
-INPUT = "/kaggle/input/presto-listwise-band/listwise_probe_input.parquet"
+INPUT_GLOB = "listwise_probe_input.parquet"
 OUT = "/kaggle/working/listwise_orders.parquet"
 SELECT = 10           # only the top-10 matter for nDCG@10
+
+# Presentation order. "live" shows candidates in our own ranking, which converts the
+# judge's position bias into a safety prior. "shuffle" is the CONTROL: a judge with
+# real order-independent signal should still surface the good items, while one that
+# merely echoes the order it was shown collapses. That distinction decides whether a
+# positive live-order result is genuine judgement or an artifact, and a pilot on our
+# own reranker checkpoint failed it badly (re-found the live top-1 on 9% of queries
+# against a 5% chance rate), so it is not a hypothetical concern.
+PRESENTATION = os.environ.get("PRESENTATION", "live")
 MODELS = [
     ("qwen3-4b-instruct", "Qwen/Qwen3-4B-Instruct-2507", True),
     ("qwen3-14b", "Qwen/Qwen3-14B", True),
@@ -54,8 +64,27 @@ def pip(*args):
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", *args], check=False)
 
 
+def find_input():
+    """Locate the parquet anywhere under /kaggle/input.
+
+    Hardcoding /kaggle/input/<slug>/<file> killed the first run: the dataset was
+    still processing when the kernel started, so the path did not exist yet. Search
+    instead, and print the tree when it fails so the next diagnosis is immediate.
+    """
+    import glob
+    hits = glob.glob(f"/kaggle/input/**/{INPUT_GLOB}", recursive=True)
+    if hits:
+        print(f"input: {hits[0]}", flush=True)
+        return hits[0]
+    print("!! input not found. /kaggle/input contains:", flush=True)
+    for root, dirs, files in os.walk("/kaggle/input"):
+        for f in files:
+            print(f"   {os.path.join(root, f)}", flush=True)
+    raise SystemExit("input parquet not attached; is the dataset still processing?")
+
+
 def load_input():
-    df = pd.read_parquet(INPUT)
+    df = pd.read_parquet(find_input())
     groups = []
     for qid, g in df.groupby("qid", sort=False):
         g = g.sort_values("rank")
@@ -102,7 +131,14 @@ def run_model(tag, repo, use_chat, groups):
     rows = []
     t0 = time.time()
     for n, g in enumerate(groups, 1):
-        lines = "\n".join(f"[{letters[i]}] {nm}" for i, nm in enumerate(g["names"]))
+        items, names = g["items"], g["names"]
+        if PRESENTATION == "shuffle":
+            # deterministic per query so the control is reproducible
+            perm = list(range(len(items)))
+            random.Random(1000 + int(g["qid"])).shuffle(perm)
+            items = [items[i] for i in perm]
+            names = [names[i] for i in perm]
+        lines = "\n".join(f"[{letters[i]}] {nm}" for i, nm in enumerate(names))
         prompt = PROMPT.format(query=g["query"], candidates=lines)
         if use_chat:
             try:  # Qwen3 hybrids default to thinking; force it off
@@ -136,9 +172,11 @@ def run_model(tag, repo, use_chat, groups):
         rest = [i for i in range(k) if i not in set(chosen)]
         order = chosen + rest
         rows.append({
-            "model": tag, "qid": g["qid"],
+            "model": tag, "qid": g["qid"], "presentation": PRESENTATION,
             "order": json.dumps(order),
-            "items": json.dumps([g["items"][i] for i in order]),
+            # item ids, so the local evaluator never depends on presentation order
+            "items": json.dumps([items[i] for i in order]),
+            "shown": json.dumps(items),
             "conf": json.dumps([round(c, 4) for c in confs]),
         })
         if n % 50 == 0 or n == len(groups):
