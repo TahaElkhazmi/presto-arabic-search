@@ -205,18 +205,38 @@ def main():
                     pairs.append((p, n))
         return per_query_auc(pairs)
 
+    def coverage(fn, qs, cells):
+        # share of within-cell (positive, negative) comparison pairs on which the
+        # feature takes DIFFERENT values, i.e. decisions it actually separates
+        # instead of passing straight through to low-id.
+        tot = diff = 0
+        for q in qs:
+            for sub in cells(q).values():
+                if len(sub) < 2:
+                    continue
+                p = [fn(q, i) for i in sub if qrels[q].get(i, 0) > 0]
+                n = [fn(q, i) for i in sub if qrels[q].get(i, 0) <= 0]
+                if not p or not n:
+                    continue
+                tot += len(p) * len(n)
+                diff += sum(1 for a in p for b in n if a != b)
+        return diff / tot if tot else float("nan")
+
     lowid = lambda q, i: -num(i)
     inc = {cells2: (auc(lowid, zc, cells2, False), auc(lowid, hc, cells2, False)),
            cells3: (auc(lowid, zc, cells3, False), auc(lowid, hc, cells3, False))}
     print("within-cell per-query AUC, COMBINED key (-feature, +id) vs low-id incumbent")
+    print("coverage = share of within-cell pos/neg pairs where the feature differs")
     print(f"  {'variant':<34s}{'cell':>6s}{'inc z':>9s}{'inc h':>9s}"
-          f"{'comb z':>9s}{'comb h':>9s}")
+          f"{'comb z':>9s}{'comb h':>9s}{'cov z':>9s}{'cov h':>9s}")
     for name, _, fn, cells in variants:
         iz, ih = inc[cells]
         cz, ch_ = auc(fn, zc, cells, True), auc(fn, hc, cells, True)
+        vz, vh = coverage(fn, zc, cells), coverage(fn, hc, cells)
         lbl = "2-lvl" if cells is cells2 else "3-lvl"
         beat = "beats" if (cz > iz and ch_ > ih) else "below"
-        print(f"  {name:<34s}{lbl:>6s}{iz:>9.4f}{ih:>9.4f}{cz:>9.4f}{ch_:>9.4f}  {beat}")
+        print(f"  {name:<34s}{lbl:>6s}{iz:>9.4f}{ih:>9.4f}{cz:>9.4f}{ch_:>9.4f}"
+              f"{vz:>9.4f}{vh:>9.4f}  {beat}")
 
     print(f"\nEND TO END, all variants (threshold: confirm >= +0.0015 and t > 2)\n")
     print(f"  {'variant':<34s}{'tune d':>12s}{'confirm d':>12s}{'t':>8s}{'verdict':>10s}")
