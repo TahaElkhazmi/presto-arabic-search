@@ -296,6 +296,27 @@ def main():
     model = CrossEncoder(str(base), device="cuda", model_kwargs=model_kwargs)
     model[0].max_seq_length = args.max_seq
 
+    # THE 4B BLOCKER. sentence-transformers 5.6 puts "message" into modality_config
+    # whenever the tokenizer carries a chat_template, and then force-converts every
+    # input to message format ("Always convert to the message format if it's supported"
+    # - transformer.py, in the modality dispatch). Our inputs are plain (query, document)
+    # pairs and come out as ZERO-LENGTH sequences, which surfaces far downstream as
+    # `cannot reshape tensor of 0 elements into shape [8, 0, -1, 128]` inside the loss.
+    #
+    # The 4B checkpoint ships a chat_template and the 0.6B does not, which is the entire
+    # reason the 4B could never train while the 0.6B always could. Proven by bisect:
+    # putting the 4B's tokenizer_config.json on 0.6B WEIGHTS reproduces the error exactly,
+    # and the unmodified 0.6B passes 32/32 steps.
+    #
+    # We never want chat formatting here - the reranker template is applied by hand in
+    # reranker_common.py - so this is unconditional. It is a no-op for any checkpoint that
+    # has no chat template, which is why the existing 0.6B path is unaffected.
+    if "message" in getattr(model[0], "modality_config", {}):
+        model[0].modality_config.pop("message")
+        print("dropped the 'message' modality: chat template would empty our text pairs")
+    if getattr(model.tokenizer, "chat_template", None) is not None:
+        model.tokenizer.chat_template = None
+
     if args.quantize:
         from peft import prepare_model_for_kbit_training
         model[0].auto_model = prepare_model_for_kbit_training(
