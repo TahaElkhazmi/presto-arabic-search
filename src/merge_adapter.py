@@ -19,12 +19,41 @@ from safetensors.torch import load_file, save_file
 from common import MODELS, setup_utf8
 
 
+def shard_map(d: Path) -> dict[str, list[str]]:
+    """filename -> tensor names, for single-file OR sharded checkpoints.
+
+    Everything before the 4B was a single-file 0.6B, so this path had never been
+    exercised; the 4B ships as model-0000{1,2}-of-00002.safetensors plus an index,
+    and the old single-file assumption raised FileNotFoundError after a full night
+    of training had already completed. Sharding is preserved on output rather than
+    collapsed into one file, which also keeps peak RAM to one shard instead of the
+    whole 4B state dict on a 15.7 GB box.
+    """
+    idx = d / "model.safetensors.index.json"
+    if idx.exists():
+        wm = json.loads(idx.read_text(encoding="utf-8"))["weight_map"]
+        out: dict[str, list[str]] = {}
+        for tensor, fname in wm.items():
+            out.setdefault(fname, []).append(tensor)
+        return out
+    return {"model.safetensors": []}      # [] = "load the file and take everything"
+
+
+def load_tensor(d: Path, name: str):
+    """Fetch a single tensor by name from a single-file or sharded checkpoint."""
+    idx = d / "model.safetensors.index.json"
+    fname = "model.safetensors"
+    if idx.exists():
+        fname = json.loads(idx.read_text(encoding="utf-8"))["weight_map"][name]
+    return load_file(str(d / fname))[name]
+
+
 def merge(base: Path, adapter: Path, out: Path) -> None:
     cfg = json.loads((adapter / "adapter_config.json").read_text(encoding="utf-8"))
     scale = cfg["lora_alpha"] / cfg["r"]
     print(f"scale = alpha/r = {scale}")
 
-    base_sd = load_file(str(base / "model.safetensors"))
+    shards = shard_map(base)
     ad = load_file(str(adapter / "adapter_model.safetensors"))
 
     pairs = {}
@@ -34,19 +63,9 @@ def merge(base: Path, adapter: Path, out: Path) -> None:
             pairs[tgt] = (ad[k], ad[k.replace("lora_A", "lora_B")])
     assert pairs, "no lora_A tensors found in adapter"
 
-    rel = []
-    for tgt, (A, B) in pairs.items():
-        assert tgt in base_sd, f"adapter target missing from base: {tgt}"
-        W = base_sd[tgt].float()
-        delta = scale * (B.float() @ A.float())
-        assert delta.shape == W.shape, f"shape mismatch on {tgt}"
-        rel.append((delta.abs().mean() / W.abs().mean()).item())
-        base_sd[tgt] = (W + delta).contiguous()
-    print(f"merged {len(pairs)} matrices; mean relative delta {sum(rel) / len(rel):.2e}")
-
     out.mkdir(parents=True, exist_ok=True)
     for f in base.iterdir():
-        if f.name == "model.safetensors" or f.name.startswith("."):
+        if f.name in shards or f.name.startswith("."):
             continue
         dst = out / f.name
         if dst.exists():
@@ -55,15 +74,36 @@ def merge(base: Path, adapter: Path, out: Path) -> None:
             shutil.copytree(f, dst)
         else:
             shutil.copy2(f, dst)
-    save_file(base_sd, str(out / "model.safetensors"))
+
+    # One shard at a time: load, apply whichever deltas land in it, write it back.
+    rel, applied = [], 0
+    for fname in shards:
+        sd = load_file(str(base / fname))
+        touched = False
+        for tgt, (A, B) in pairs.items():
+            if tgt not in sd:
+                continue
+            W = sd[tgt].float()
+            delta = scale * (B.float() @ A.float())
+            assert delta.shape == W.shape, f"shape mismatch on {tgt}"
+            rel.append((delta.abs().mean() / W.abs().mean()).item())
+            sd[tgt] = (W + delta).contiguous()   # stays float32, per the bf16 rounding trap
+            applied += 1
+            touched = True
+        save_file(sd, str(out / fname), metadata={"format": "pt"})
+        del sd
+        print(f"  {fname}: {'merged' if touched else 'copied unchanged'}")
+    assert applied == len(pairs), \
+        f"{len(pairs) - applied} adapter targets never matched a base tensor"
+    print(f"merged {applied} matrices; mean relative delta {sum(rel) / len(rel):.2e}")
 
     # Trust nothing: reload from disk and verify one merged matrix exactly.
-    saved = load_file(str(out / "model.safetensors"))
-    orig = load_file(str(base / "model.safetensors"))
     tgt, (A, B) = next(iter(sorted(pairs.items())))
-    want = orig[tgt].float() + scale * (B.float() @ A.float())
-    exact = torch.equal(saved[tgt].float(), want)
-    frac_changed = (saved[tgt].float() != orig[tgt].float()).float().mean().item()
+    saved_t = load_tensor(out, tgt)
+    orig_t = load_tensor(base, tgt)
+    want = orig_t.float() + scale * (B.float() @ A.float())
+    exact = torch.equal(saved_t.float(), want)
+    frac_changed = (saved_t.float() != orig_t.float()).float().mean().item()
     print(f"reload check on {tgt}: exact={exact}, elements changed vs base={frac_changed:.2%}")
     assert exact, "saved weights do not equal base + scaled delta"
     assert frac_changed > 0.5, "suspiciously few elements changed; merge likely no-op"

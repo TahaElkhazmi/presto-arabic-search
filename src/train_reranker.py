@@ -451,8 +451,11 @@ def main():
 
     merge(base, adapter_dir, merged_dir)
 
-    base_score = load_file(str(base / "model.safetensors"))["score.weight"]
-    merged_score = load_file(str(merged_dir / "model.safetensors"))["score.weight"]
+    # load_tensor, not load_file: the 4B checkpoint is sharded, so "model.safetensors"
+    # does not exist for it.
+    from merge_adapter import load_tensor
+    base_score = load_tensor(base, "score.weight")
+    merged_score = load_tensor(merged_dir, "score.weight")
     assert torch.equal(base_score, merged_score), "frozen score head changed during merge"
     print("score head verified identical to base")
 
