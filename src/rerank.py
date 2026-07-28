@@ -123,7 +123,8 @@ def main():
                         "margin (K=3) with a higher --conf-t routes a differently-shaped "
                         "set of queries into the wide band; measured +0.0009 benchmark "
                         "at K=3/conf-t 0.30 (FINDINGS 2026-07-26)")
-    p.add_argument("--tie-key", choices=["id", "cont3", "cont3prefix", "cont3pos"],
+    p.add_argument("--tie-key",
+                   choices=["id", "cont3", "cont3prefix", "cont3pos", "cont3posft"],
                    default="id",
                    help="in-group order: ascending id; char-3gram query-in-name "
                         "containment desc then id (adaptive lexical fallback); or "
@@ -135,7 +136,13 @@ def main():
                         "strings (57.3 distinct titles on average). The prefix test is "
                         "binary, so it partitions the tie group and the low-id prior "
                         "still orders each half rather than being overwritten "
-                        "(+0.0123 full benchmark, +0.0121 untouched)")
+                        "(+0.0123 full benchmark, +0.0121 untouched); or cont3posft, "
+                        "which appends FIRST-TOKEN position below match-position. "
+                        "Match-position only fires on a CONTIGUOUS occurrence of the "
+                        "query tokens, so every title holding them scattered scores 0 "
+                        "and drops to raw id; first-token position asks the same "
+                        "attribute-position question one level down and is worth "
+                        "+0.0028 full benchmark, +0.0039 on the never-tuned slice")
     p.add_argument("--pos-bonus", type=float, default=0.0,
                    help="add this multiple of the token match-position score directly "
                         "to the BLEND, not just to the in-group tie-break. Match "
@@ -143,8 +150,8 @@ def main():
                         "near-tie chain, so a strong signal is confined to a narrow "
                         "decision; a bounded additive term lets it also reorder "
                         "candidates whose blend scores are close but not in the same "
-                        "chain. Requires --tie-key cont3pos. Swept to a bracketed "
-                        "optimum at 0.35 (0.200 and 0.600 both worse)")
+                        "chain. Requires --tie-key cont3pos or cont3posft. Swept to a "
+                        "bracketed optimum at 0.35 (0.200 and 0.600 both worse)")
     p.add_argument("--strip-fillers", action="store_true",
                    help="drop Libyan-dialect filler/request tokens from the query before "
                         "the cont3 key (ablated-safe set; +0.0032 benchmark, cont3-only)")
@@ -155,8 +162,8 @@ def main():
     assert len(args.runs) == len(args.depths) == len(args.weights), "one depth+weight per run"
     assert args.name or args.lam_grid or args.score_only, \
         "need --name to write runs, --lam-grid to evaluate, or --score-only"
-    assert not args.pos_bonus or args.tie_key == "cont3pos", \
-        "--pos-bonus needs --tie-key cont3pos (it reuses that key's position score)"
+    assert not args.pos_bonus or args.tie_key in ("cont3pos", "cont3posft"), \
+        "--pos-bonus needs --tie-key cont3pos/cont3posft (it reuses the position score)"
 
     run_files = [load_run_jsonl(path) for path in args.runs]
     queries = select_queries(load_jsonl(args.queries or (BENCH / "queries.jsonl")),
@@ -175,7 +182,7 @@ def main():
     print(f"cache {cache_path.name}: {len(cache)} scores, {len(todo)} to compute")
 
     names: dict[str, str] = {}
-    if todo or args.tie_key in ("cont3", "cont3prefix", "cont3pos"):
+    if todo or args.tie_key in ("cont3", "cont3prefix", "cont3pos", "cont3posft"):
         names = {str(row["item_id"]): row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")}
 
     if todo:
@@ -217,7 +224,7 @@ def main():
             k = args.conf_topk
             conf[qid] = ces[0] - ces[k - 1] if len(ces) >= k else 1.0
 
-    if args.tie_key in ("cont3", "cont3prefix", "cont3pos"):
+    if args.tie_key in ("cont3", "cont3prefix", "cont3pos", "cont3posft"):
         from stacker_features import char_ngrams, containment
 
         # ablated-safe Libyan-dialect filler/request tokens (post normalize_arabic);
@@ -279,7 +286,37 @@ def main():
                     return 1.0 / (1.0 + k)
             return 0.0
 
+        def first_token_position(qid: str, iid: str) -> float:
+            """3/(1+k) for the FIRST query token's offset k in the title; 0 if absent.
+
+            match_position above requires the query tokens to appear CONTIGUOUSLY, so
+            every title that holds them scattered - or holds only the leading one -
+            scores 0 and falls straight through to raw ascending id. This asks the same
+            Meilisearch attribute-position question one level down and re-orders exactly
+            that residue.
+
+            It was missed for a long time because the standard screen compared each
+            candidate feature's STANDALONE within-cell AUC against the low-id prior,
+            where this scores 0.5194 against 0.6230 and is discarded. But the cascade
+            sorts by (-feature, +id): the feature PARTITIONS and low-id still orders
+            inside each class, so the quantity that matters is the AUC of the COMBINED
+            key, which is 0.6368 / 0.6978 against low-id's 0.6230 / 0.6948. Measured the
+            way it is actually used, it wins; measured standalone, it looks dead.
+
+            Threshold-free by construction (same 1/(1+k) shape as match_position), so
+            there are no bucket edges to overfit. Binary presence alone is worth only
+            +0.0006, i.e. the signal really is the POSITION and not the mere match.
+            """
+            toks = _norm(iid).split()
+            q = qtoks_stripped[qid]
+            if not q or q[0] not in toks:
+                return 0.0
+            return 3.0 / (1.0 + toks.index(q[0]))
+
     def group_key(qid: str):
+        if args.tie_key == "cont3posft":
+            return lambda x: (-cont3(qid, x[1]), -match_position(qid, x[1]),
+                              -first_token_position(qid, x[1]), _id_key(x[1]))
         if args.tie_key == "cont3pos":
             return lambda x: (-cont3(qid, x[1]), -match_position(qid, x[1]),
                               _id_key(x[1]))
