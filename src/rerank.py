@@ -152,6 +152,15 @@ def main():
                         "candidates whose blend scores are close but not in the same "
                         "chain. Requires --tie-key cont3pos or cont3posft. Swept to a "
                         "bracketed optimum at 0.35 (0.200 and 0.600 both worse)")
+    p.add_argument("--ft-bonus", type=float, default=0.0,
+                   help="same trick as --pos-bonus, applied to FIRST-TOKEN position: add "
+                        "this multiple of it to the blend so it reorders candidates whose "
+                        "scores are close but not in the same eps chain. Requires "
+                        "--tie-key cont3posft. Note first-token is 3/(1+k) in [0,3] while "
+                        "match-position is 1/(1+k) in [0,1], so the useful beta is ~7x "
+                        "smaller; swept to a bracketed optimum at 0.05 (0.02 and 0.12 both "
+                        "worse), worth +0.0020 full benchmark and +0.0026 on the "
+                        "never-tuned slice")
     p.add_argument("--strip-fillers", action="store_true",
                    help="drop Libyan-dialect filler/request tokens from the query before "
                         "the cont3 key (ablated-safe set; +0.0032 benchmark, cont3-only)")
@@ -164,6 +173,8 @@ def main():
         "need --name to write runs, --lam-grid to evaluate, or --score-only"
     assert not args.pos_bonus or args.tie_key in ("cont3pos", "cont3posft"), \
         "--pos-bonus needs --tie-key cont3pos/cont3posft (it reuses the position score)"
+    assert not args.ft_bonus or args.tie_key == "cont3posft", \
+        "--ft-bonus needs --tie-key cont3posft (it reuses that key's first-token score)"
 
     run_files = [load_run_jsonl(path) for path in args.runs]
     queries = select_queries(load_jsonl(args.queries or (BENCH / "queries.jsonl")),
@@ -342,13 +353,19 @@ def main():
         out.extend(i for _, i in group)
         return out
 
+    # first_token_position only exists under --tie-key cont3posft, and --pos-bonus is
+    # legal with plain cont3pos, so bind a zero stand-in rather than risking a NameError
+    # in the blend. The conditional never evaluates the real name when ft_bonus is 0.
+    ft_score = first_token_position if args.ft_bonus else (lambda qid, iid: 0.0)
+
     def blended(lam: float) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for qid in qids:
-            if args.pos_bonus:
+            if args.pos_bonus or args.ft_bonus:
                 scored = [
                     (lam * ce[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max
-                     + args.pos_bonus * match_position(qid, iid), iid)
+                     + args.pos_bonus * match_position(qid, iid)
+                     + args.ft_bonus * ft_score(qid, iid), iid)
                     for iid in pools[qid]
                 ]
             else:
