@@ -124,7 +124,8 @@ def main():
                         "set of queries into the wide band; measured +0.0009 benchmark "
                         "at K=3/conf-t 0.30 (FINDINGS 2026-07-26)")
     p.add_argument("--tie-key",
-                   choices=["id", "cont3", "cont3prefix", "cont3pos", "cont3posft"],
+                   choices=["id", "cont3", "cont3prefix", "cont3pos", "cont3posft",
+                            "cont3posftlt"],
                    default="id",
                    help="in-group order: ascending id; char-3gram query-in-name "
                         "containment desc then id (adaptive lexical fallback); or "
@@ -152,6 +153,21 @@ def main():
                         "candidates whose blend scores are close but not in the same "
                         "chain. Requires --tie-key cont3pos or cont3posft. Swept to a "
                         "bracketed optimum at 0.35 (0.200 and 0.600 both worse)")
+    p.add_argument("--idf-bonus", type=float, default=0.0,
+                   help="add this multiple of the HIGHEST-IDF query token's position to "
+                        "the blend. 'First token' is a positional accident of how the "
+                        "query was typed; the most distinctive token is the one that "
+                        "should locate the product, and it differs from the first token "
+                        "on 49.5% of queries. Sub-gate alone (+0.0011) but part of a "
+                        "near-additive trio")
+    p.add_argument("--top-eps", type=float, default=0.0,
+                   help="use this eps for the first --top-k-eps ranks instead of the "
+                        "normal one. nDCG@10 weights rank 1 at 1.000 and rank 9 at 0.315, "
+                        "so a re-sort near the top is worth about three times one near "
+                        "the bottom, yet eps was uniform across positions. Sub-gate alone "
+                        "(+0.0012)")
+    p.add_argument("--top-k-eps", type=int, default=5,
+                   help="how many leading ranks --top-eps applies to")
     p.add_argument("--ft-bonus", type=float, default=0.0,
                    help="same trick as --pos-bonus, applied to FIRST-TOKEN position: add "
                         "this multiple of it to the blend so it reorders candidates whose "
@@ -171,9 +187,11 @@ def main():
     assert len(args.runs) == len(args.depths) == len(args.weights), "one depth+weight per run"
     assert args.name or args.lam_grid or args.score_only, \
         "need --name to write runs, --lam-grid to evaluate, or --score-only"
-    assert not args.pos_bonus or args.tie_key in ("cont3pos", "cont3posft"), \
-        "--pos-bonus needs --tie-key cont3pos/cont3posft (it reuses the position score)"
-    assert not args.ft_bonus or args.tie_key == "cont3posft", \
+    assert not args.pos_bonus or args.tie_key in ("cont3pos", "cont3posft", "cont3posftlt"), \
+        "--pos-bonus needs a cont3pos* tie-key (it reuses that key's position score)"
+    assert not args.idf_bonus or args.tie_key in ("cont3posft", "cont3posftlt"), \
+        "--idf-bonus needs a cont3posft* tie-key (it shares that block's helpers)"
+    assert not args.ft_bonus or args.tie_key in ("cont3posft", "cont3posftlt"), \
         "--ft-bonus needs --tie-key cont3posft (it reuses that key's first-token score)"
 
     run_files = [load_run_jsonl(path) for path in args.runs]
@@ -193,7 +211,7 @@ def main():
     print(f"cache {cache_path.name}: {len(cache)} scores, {len(todo)} to compute")
 
     names: dict[str, str] = {}
-    if todo or args.tie_key in ("cont3", "cont3prefix", "cont3pos", "cont3posft"):
+    if todo or args.tie_key in ("cont3", "cont3prefix", "cont3pos", "cont3posft", "cont3posftlt"):
         names = {str(row["item_id"]): row["name"] for row in load_jsonl(BENCH / "corpus.jsonl")}
 
     if todo:
@@ -235,7 +253,7 @@ def main():
             k = args.conf_topk
             conf[qid] = ces[0] - ces[k - 1] if len(ces) >= k else 1.0
 
-    if args.tie_key in ("cont3", "cont3prefix", "cont3pos", "cont3posft"):
+    if args.tie_key in ("cont3", "cont3prefix", "cont3pos", "cont3posft", "cont3posftlt"):
         from stacker_features import char_ngrams, containment
 
         # ablated-safe Libyan-dialect filler/request tokens (post normalize_arabic);
@@ -324,7 +342,45 @@ def main():
                 return 0.0
             return 3.0 / (1.0 + toks.index(q[0]))
 
+        def last_token_position(qid: str, iid: str) -> float:
+            """Bucketed offset of the LAST query token; a 5th key level below first-token.
+
+            Sub-gate on its own (+0.0012) but part of a near-additive trio: it acts on the
+            tie-break key while the idf bonus acts on the blend and --top-eps acts on the
+            band geometry, so the three barely overlap and sum to +0.0039.
+            """
+            toks = _norm(iid).split()
+            q = qtoks_stripped[qid]
+            if not q or q[-1] not in toks:
+                return 0.0
+            k = toks.index(q[-1])
+            return 3.0 if k == 0 else (2.0 if k <= 2 else 1.0)
+
+        # token IDF over UNIQUE normalized catalog names: catalog-derived, so it is legal
+        # under the measurement-only rule on the judged file.
+        _tok_df: dict[str, int] = {}
+        for _n in {_norm(i) for i in names}:
+            for _t in set(_n.split()):
+                _tok_df[_t] = _tok_df.get(_t, 0) + 1
+        _n_uniq = len({_norm(i) for i in names})
+        _best_tok = {qid: (max(qtoks_stripped[qid],
+                               key=lambda t: math.log(1.0 + _n_uniq / (_tok_df.get(t, 0) + 0.5)))
+                           if qtoks_stripped[qid] else None)
+                     for qid in qids}
+
+        def idf_token_position(qid: str, iid: str) -> float:
+            """Position of the query's most DISTINCTIVE token, same 3/(1+k) shape."""
+            b = _best_tok[qid]
+            if b is None:
+                return 0.0
+            toks = _norm(iid).split()
+            return 3.0 / (1.0 + toks.index(b)) if b in toks else 0.0
+
     def group_key(qid: str):
+        if args.tie_key == "cont3posftlt":
+            return lambda x: (-cont3(qid, x[1]), -match_position(qid, x[1]),
+                              -first_token_position(qid, x[1]),
+                              -last_token_position(qid, x[1]), _id_key(x[1]))
         if args.tie_key == "cont3posft":
             return lambda x: (-cont3(qid, x[1]), -match_position(qid, x[1]),
                               -first_token_position(qid, x[1]), _id_key(x[1]))
@@ -340,11 +396,17 @@ def main():
 
     def eps_resort(scored: list[tuple[float, str]], eps: float, key) -> list[str]:
         """Chain-group descending scores whose consecutive gap is <= eps; each group
-        sorts by `key` (the in-band prior beats sub-eps score noise)."""
+        sorts by `key` (the in-band prior beats sub-eps score noise).
+
+        With --top-eps set, the first --top-k-eps ranks use that band instead. nDCG@10
+        weights rank 1 at 1.000 and rank 9 at 0.315, so a re-sort near the head is worth
+        roughly three times one near the tail, but eps was uniform across positions.
+        """
         out: list[str] = []
         group: list[tuple[float, str]] = []
-        for s, iid in scored:
-            if group and (group[-1][0] - s) > eps:
+        for pos, (s, iid) in enumerate(scored):
+            e = args.top_eps if (args.top_eps > 0 and pos < args.top_k_eps) else eps
+            if group and (group[-1][0] - s) > e:
                 group.sort(key=key)
                 out.extend(i for _, i in group)
                 group = []
@@ -357,15 +419,17 @@ def main():
     # legal with plain cont3pos, so bind a zero stand-in rather than risking a NameError
     # in the blend. The conditional never evaluates the real name when ft_bonus is 0.
     ft_score = first_token_position if args.ft_bonus else (lambda qid, iid: 0.0)
+    idf_score = idf_token_position if args.idf_bonus else (lambda qid, iid: 0.0)
 
     def blended(lam: float) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for qid in qids:
-            if args.pos_bonus or args.ft_bonus:
+            if args.pos_bonus or args.ft_bonus or args.idf_bonus:
                 scored = [
                     (lam * ce[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max
                      + args.pos_bonus * match_position(qid, iid)
-                     + args.ft_bonus * ft_score(qid, iid), iid)
+                     + args.ft_bonus * ft_score(qid, iid)
+                     + args.idf_bonus * idf_score(qid, iid), iid)
                     for iid in pools[qid]
                 ]
             else:
