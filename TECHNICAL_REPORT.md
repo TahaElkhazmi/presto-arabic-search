@@ -1,18 +1,28 @@
 # Hybrid Retrieval and Calibrated Re-ranking for Arabic E-Commerce Search
 
 **Technical Report - PrestoAI Arabic E-Commerce Search Retrieval Challenge**
-Team **Looooop Gain03** - final public leaderboard score **0.66738 nDCG@10, rank 1** (margin +0.0134 over the runner-up at submission time).
+Team **Looooop Gain03** - public leaderboard score **0.68527 nDCG@10** across fifteen submissions, each predicted in advance to within +-0.0014 by a local harness.
 
 ---
 
 ## 1. Abstract
 
-This report describes the system that reached and held rank 1 on the public leaderboard of the PrestoAI Arabic E-Commerce Search Retrieval Challenge.
+This report describes the system built for the PrestoAI Arabic E-Commerce Search Retrieval Challenge, which held rank 1 for most of the competition and finished at 0.68527 nDCG@10.
 The final system is a three-layer pipeline: hybrid lexical-dense candidate retrieval fused with reciprocal-rank fusion, a three-stage fine-tuned Qwen3 cross-encoder re-ranker, and a calibrated post-processing layer that resolves the re-ranker's low-confidence zone with character-level lexical evidence and dialect-aware query normalization.
 Beyond the architecture, we believe the main contribution of this work is methodological.
-Every change was measured against a local evaluation harness that predicted the public leaderboard to within +-0.0014 across all twelve submissions, and every candidate improvement passed a pre-registered gate on pristine held-out splits before being shipped.
-Four findings shaped the outcome: (1) the provided training labels are only 8-17% grounded in the scoring catalog, which invalidates absolute-relevance objectives and most supervised feature learning; (2) synthetically generated, catalog-grounded training data beat the provided labels at teaching fine-grained product discrimination, producing the largest single model improvement of the project; (3) a pipeline's auxiliary machinery silently mis-sized for an older, weaker model can absorb most of a better model's value - systematically re-fitting every calibrated component to the final model recovered +0.005 nDCG that appeared structurally lost; and (4) a re-ranker embedded in a score blend is not optimised by maximising its standalone ranking quality - our final experiment produced a model that ordered candidates measurably better in isolation yet made the complete system worse, which is the clearest demonstration in this project of why end-to-end measurement cannot be replaced by a component proxy.
-The full experimental record, including ten diagnosed negative results, is presented alongside the positive path.
+Every change was measured against a local evaluation harness that predicted the public leaderboard to within +-0.0014 across all fifteen submissions, and every candidate improvement passed a pre-registered gate on pristine held-out splits before being shipped.
+Five findings shaped the outcome.
+(1) The provided training labels are only 8-17% grounded in the scoring catalog, which invalidates absolute-relevance objectives and most supervised feature learning.
+(2) Synthetically generated, catalog-grounded training data beat the provided labels at teaching fine-grained product discrimination, producing the largest single MODEL improvement of the project.
+(3) A pipeline's auxiliary machinery silently mis-sized for an older, weaker model can absorb most of a better model's value; systematically re-fitting every calibrated component recovered +0.005 nDCG that appeared structurally lost.
+(4) A re-ranker embedded in a score blend is not optimised by maximising its standalone ranking quality: one model ordered candidates measurably better in isolation yet made the complete system worse.
+(5) The largest single gain of the entire project, +0.0123 nDCG from a one-line text predicate, came from testing an assumption rather than from adding capability.
+We had concluded that our dominant failure mode was information-theoretically unsolvable, because a saturated similarity metric made dozens of candidates look identical and the competition catalog exposes only a product id and a name.
+Four progressively more powerful models - a 4B re-ranker, a 14B re-ranker, a frontier instruction model, and a domain-specialist Arabic encoder - were all measured NET NEGATIVE against that failure mode.
+Measuring the assumption showed the candidates were not identical at all: the tie groups averaged 90.9 members but 57.3 distinct titles, and not one of 993 groups was a single repeated string.
+The metric had stopped discriminating; the data had not stopped differing.
+Section 5.7 develops this into a general rule, because the two situations are indistinguishable from the metric's output and have opposite remedies.
+The full experimental record, including fifteen diagnosed negative results, is presented alongside the positive path.
 
 ---
 
@@ -135,6 +145,41 @@ Three observations on the shape of this ladder.
 First, roughly half the total gain came from the post-processing and calibration layer, not from model training - on a task where the metric is top-heavy and the catalog is duplicate-dense, disciplined exploitation of structural priors (low-id, lexical containment, dialect) is worth as much as a model generation.
 Second, the single largest model-side jump in pure ordering (+0.0157 from the synthetic curriculum) initially surfaced as only +0.0013 end-to-end, and rows 11-12 are where the rest of it was recovered; Section 7.1 tells that story.
 Third, every gain shipped only after surviving the gate ladder of Section 3; nothing on this table is a leaderboard lottery ticket.
+
+### 5.7 A saturated metric mistaken for absent information
+
+The dominant residual failure was a cohort of 2,339 queries (8.1%) scoring EXACTLY zero nDCG@10.
+They were not a recall problem: 85% had a judged-relevant item inside the candidate pool, and a perfect re-ranker on the pools we already had would have scored 0.7533 on them, worth +0.0607 full-benchmark.
+The diagnosis was that our in-band ordering key had run out of signal.
+That key is character-3gram containment, |query grams AND title grams| / |query grams|, which SATURATES at 1.000 the moment a title contains every query gram, irrespective of what else the title says.
+On these queries a mean of 69.6 pool items sat at the maximum value simultaneously, against 12.1 on healthy queries, so the key was constant across the entire head and the ordering degenerated to the ascending-product-id fallback across dozens of candidates.
+
+We drew the wrong conclusion from this. Since the competition catalog exposes only `item_id` and `product_name_ar` - brand, category, description, price and seller are all stripped - we reasoned that the information required to separate same-brand items had been removed from the data, and that the +0.0607 was therefore unreachable.
+Acting on that reasoning, we spent roughly a day and a half attempting to INJECT the missing knowledge from outside. Every attempt was measured net negative:
+
+| knowledge injector | measured outcome |
+|---|---|
+| Qwen3-4B-Instruct listwise judge, constrained decoding | -0.0049 |
+| Qwen3-14B listwise judge | -0.0396 |
+| Gemini 3.1 Pro listwise judge | null, and at n=98 the effect size needed to matter was excluded at t-sensitivity 3.6 |
+| GATE-AraBert-v1, the encoder used to build the benchmark's own judged pools | -0.0306 ungated, -0.0057 saturation-gated |
+
+The error was that we never measured the premise.
+When we finally did, the saturated tie groups turned out to average 90.9 members but **57.3 distinct titles**, and **zero of 993 groups** consisted of a single repeated string.
+"مولي" and "طعام القطط مولي بالدجاج والسمك - 2 كغ" both score containment 1.000 while being entirely different strings.
+The information had never been absent; our metric had merely stopped resolving it.
+
+The fix was a one-line predicate - whether the title BEGINS with the query - inserted between containment and the id fallback, worth **+0.0123 full benchmark and +0.0121 on the untouched arbiter**, the largest single gain of the project.
+Generalising the predicate from a binary test to the query's token OFFSET within the title added a further +0.0023, and re-fitting the stack constants plus adding the position term to the blend score a further +0.0020.
+
+Two structural points explain why this worked where far more powerful machinery failed.
+First, the winning feature is BINARY, so it PARTITIONS each tie group and the ascending-id prior continues to order candidates within each partition.
+Every failed injector was a continuous score, which displaces the id ordering entirely - and the id prior is strong, measuring AUC 0.6321 on the zero cohort and 0.6882 on healthy queries at that decision point, a bar that nine separate candidate features subsequently failed to clear.
+Second, the winning feature costs zero GPU and is computable from data we always had.
+
+**The transferable rule: when a similarity metric saturates, determine whether the underlying DATA is degenerate or whether the METRIC has merely stopped discriminating.**
+Those two situations produce identical metric output and demand opposite responses - the first justifies acquiring new information, the second requires only a finer key.
+We assumed the first and paid for it; the evidence supported the second the entire time.
 
 ---
 
