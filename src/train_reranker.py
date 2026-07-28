@@ -142,6 +142,7 @@ def build_groups(
     mined_path=None,
     hard_cap: int = 6,
     raw: bool = False,
+    max_groups: int = 0,
 ) -> Dataset:
     """v2 groups: <=4 pos + <=hard_cap provided hard + n_random random.
 
@@ -206,6 +207,14 @@ def build_groups(
     if smoke:
         data = data.sample(n=2000, random_state=seed)
         print(f"smoke mode: {len(data)} groups")
+    elif max_groups and max_groups < len(data):
+        # Staged training: a full provided-pairs stage is ~8 h on this GPU, which is a
+        # long time to wait before learning whether the model orders any better than its
+        # predecessor. Subsampling groups gives a SHORT run that still completes and
+        # merges normally, so its checkpoint is immediately scoreable by the usual gate.
+        # Sampled before the shuffle, with the same seed, so a larger run is a superset.
+        data = data.sample(n=max_groups, random_state=seed)
+        print(f"staged run: {len(data)} of {len(rows)} groups")
     data = data.sample(frac=1.0, random_state=seed).reset_index(drop=True)
     if not raw:
         data["query"] = data["query"].map(format_query)
@@ -224,6 +233,12 @@ def main():
     p.add_argument("--n-random", type=int, default=2, help="random catalog negatives per group")
     p.add_argument("--resume", action="store_true", help="resume from last checkpoint in output dir")
     p.add_argument("--max-pairs", type=int, default=200_000, help="0 = all pairs")
+    p.add_argument("--max-groups", type=int, default=0,
+                   help="cap LambdaLoss groups (0 = all). A full provided-pairs stage is "
+                        "~8 h on this GPU; a capped run finishes, merges and is scoreable "
+                        "by the normal gate, so a weak model can be killed after ~2 h "
+                        "instead of after a full night. Sampled with the same seed, so a "
+                        "bigger cap is a superset of a smaller one")
     p.add_argument("--mini-batch", type=int, default=16, help="per-device batch size")
     p.add_argument("--accum", type=int, default=4, help="grad accumulation (effective 64)")
     p.add_argument("--lr", type=float, default=1e-4)
@@ -281,7 +296,8 @@ def main():
             dataset = build_groups_external(args.groups_parquet, args.smoke)
         else:
             dataset = build_groups(
-                args.smoke, n_random=args.n_random, mined_path=args.mined, hard_cap=args.hard_cap
+                args.smoke, n_random=args.n_random, mined_path=args.mined,
+                hard_cap=args.hard_cap, max_groups=args.max_groups
             )
 
     model_kwargs = {"torch_dtype": torch.bfloat16}
