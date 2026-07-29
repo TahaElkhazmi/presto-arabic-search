@@ -1,16 +1,16 @@
 # Hybrid Retrieval and Calibrated Re-ranking for Arabic E-Commerce Search
 
 **Technical Report - PrestoAI Arabic E-Commerce Search Retrieval Challenge**
-Team **Looooop Gain03** - public leaderboard score **0.68527 nDCG@10** across fifteen submissions, each predicted in advance to within +-0.0014 by a local harness.
+Team **Looooop Gain03** - public leaderboard score **0.69362 nDCG@10** across seventeen submissions, each predicted in advance to within +-0.0014 by a local harness.
 
 ---
 
 ## 1. Abstract
 
-This report describes the system built for the PrestoAI Arabic E-Commerce Search Retrieval Challenge, which held rank 1 for most of the competition and finished at 0.68527 nDCG@10.
+This report describes the system built for the PrestoAI Arabic E-Commerce Search Retrieval Challenge, which held rank 1 for most of the competition and stands at 0.69362 nDCG@10.
 The final system is a three-layer pipeline: hybrid lexical-dense candidate retrieval fused with reciprocal-rank fusion, a three-stage fine-tuned Qwen3 cross-encoder re-ranker, and a calibrated post-processing layer that resolves the re-ranker's low-confidence zone with character-level lexical evidence and dialect-aware query normalization.
 Beyond the architecture, we believe the main contribution of this work is methodological.
-Every change was measured against a local evaluation harness that predicted the public leaderboard to within +-0.0014 across all fifteen submissions, and every candidate improvement passed a pre-registered gate on pristine held-out splits before being shipped.
+Every change was measured against a local evaluation harness that predicted the public leaderboard to within +-0.0014 across all seventeen submissions, and every candidate improvement passed a pre-registered gate on pristine held-out splits before being shipped.
 Five findings shaped the outcome.
 (1) The provided training labels are only 8-17% grounded in the scoring catalog, which invalidates absolute-relevance objectives and most supervised feature learning.
 (2) Synthetically generated, catalog-grounded training data beat the provided labels at teaching fine-grained product discrimination, producing the largest single MODEL improvement of the project.
@@ -22,7 +22,7 @@ Four progressively more powerful models - a 4B re-ranker, a 14B re-ranker, a fro
 Measuring the assumption showed the candidates were not identical at all: the tie groups averaged 90.9 members but 57.3 distinct titles, and not one of 993 groups was a single repeated string.
 The metric had stopped discriminating; the data had not stopped differing.
 Section 5.7 develops this into a general rule, because the two situations are indistinguishable from the metric's output and have opposite remedies.
-The full experimental record, including fifteen diagnosed negative results, is presented alongside the positive path.
+The full experimental record, including nineteen diagnosed negative results, is presented alongside the positive path.
 
 ---
 
@@ -126,7 +126,7 @@ Every constant in this paragraph was fitted on a pristine split against the *fin
 
 ## 5. Experimental Record: the Positive Path
 
-Public leaderboard progression (every submission was locally predicted first; twelve for twelve inside tolerance):
+Public leaderboard progression (every submission was locally predicted first; seventeen for seventeen inside tolerance):
 
 | # | Change | Public LB |
 |---|---|---|
@@ -139,7 +139,17 @@ Public leaderboard progression (every submission was locally predicted first; tw
 | 8-9 | + two-stage warm-up re-ranker, temperature recalibration | 0.66078 -> 0.66177 |
 | 10 | + synthetic-curriculum re-ranker (Stage 2 above) | 0.66231 |
 | 11 | + full stack recalibration for the new model | 0.66550 |
-| 12 | + fusion-prior recalibration (k=10->60, 2:1->3:1) | **0.66738** |
+| 12 | + fusion-prior recalibration (k=10->60, 2:1->3:1) | 0.66738 |
+| 13 | + confidence-margin redefinition (top1-top3) | 0.66861 |
+| 14 | + **title-starts-with-query prefix key** (largest single gain, +0.0123) | 0.67956 |
+| 15 | + token match-position generalising the prefix key | 0.68254 |
+| 16 | + stack re-tune and match-position as an additive blend term | 0.68527 |
+| 17 | + first-token position as a key level and a blend term | 0.68822 |
+| 18 | + three stacked sub-gate changes (Section 5.8) | **0.69362** |
+
+Rows 14-18 were all found in the final four days, entirely without GPU training, by
+re-examining assumptions rather than adding capability; Sections 5.7 and 5.8 develop the two
+transferable lessons behind them.
 
 Three observations on the shape of this ladder.
 First, roughly half the total gain came from the post-processing and calibration layer, not from model training - on a task where the metric is top-heavy and the catalog is duplicate-dense, disciplined exploitation of structural priors (low-id, lexical containment, dialect) is worth as much as a model generation.
@@ -208,6 +218,33 @@ We consider these as informative as the positive path; each entry states the hyp
    The model improved too: pure ranking quality rose to 0.6254 from 0.6204, a sixth consecutive generation gain.
    **Yet the complete system got worse** (-0.0017 with each model at its own re-tuned operating point, temperature bracketed on both sides to rule out a grid artifact).
    Section 7.2 analyses why; this is the finding we would most want to carry to another project.
+12. **Deeper candidate pools (depth 100 -> 150)** - 4.9 GPU-hours scored 2.07M additional pairs, lifting pool recall 0.8891 -> 0.9208 and the pool oracle 0.9525 -> 0.9671.
+   End to end it delivered +0.000278 on the full benchmark and **-0.000371 on the untouched arbiter**: a 2% conversion of the available headroom.
+   A 144-cell re-tune of the band geometry then returned the shipped constants unchanged as its own argmax, refuting our stated prediction that denser pools (mean 166 -> 250 candidates) would require a wider near-tie band.
+   Mechanism: at this depth the system is ordering-limited, not recall-limited, so admitting more candidates adds mostly items it cannot order.
+13. **Rank-Biased Centroids as the fusion function** - geometric rank decay in place of reciprocal, 36 configurations spanning the persistence parameter from 0.60 to 0.999.
+   Nothing beat RRF; the best cell was +0.0004 on one holdout half and negative on the other.
+   The informative part is the shape: performance has an interior optimum in the decay rate, so the fusion prior wants a moderate steepness, and both sharper and flatter priors are worse.
+   This retro-explains the +0.0024 from raising the RRF constant k, which flattens the prior, without licensing further flattening.
+14. **Cross-encoder score as a grade-separating key level** - see Section 6.1; a lead that survived a strong global measurement and died at the decision cell.
+15. **Ensemble re-test under the final key** - the five ensemble failures of entry 7 were all measured in an earlier era when the blend leaned much harder on the cross-encoder (blend weight 0.60 versus 0.50 at the end), so the verdict was re-taken across 40 configurations including a previously untried three-way mixture and both probability- and logit-space averaging.
+   Every configuration was null or negative and monotone in the partner's weight; the optimum remains exactly zero.
+
+### 6.1 A fourth estimator failure: global discrimination is not cell discrimination
+
+Our metric awards gains of `2^grade - 1`, so a grade-3 item is worth seven times a grade-1, yet every screen we had ever run used relevant-versus-irrelevant as its target.
+Asking instead which signal separates grade 3 from grade 2, over 17,578 grade-differing pairs inside our own shipped top-10, produced the strongest global result we had seen: the cross-encoder score achieved 0.7225 AUC against the incumbent low-id prior's 0.6287, on a task it was never trained for, and the near-tie re-sort is precisely where the pipeline discards it.
+
+Conditioning on the cell where the decision is actually taken reverses it completely.
+Restricted to pairs where containment, match-position, first-token and last-token all tie - the residual cell in which the fallback decides - the cross-encoder scores 0.4783 and the low-id prior 0.7100, a gap of **-0.2317** against the challenger.
+The cross-encoder's grade signal is almost entirely consumed by the text levels above it; what survives three levels of lexical filtering is not something it can separate.
+
+This is the fourth distinct way our feature screen has been wrong, and the progression is the part worth transferring:
+(1) standalone AUC, ignoring that a discrete feature partitions rather than displaces;
+(2) combined-key AUC, ignoring coverage - the highest edge we ever measured, +0.625, was worthless at 0.5% coverage;
+(3) predictiveness, ignoring whether the pipeline already consumes the signal upstream;
+(4) global AUC on a new target, without conditioning on the decision cell.
+Ten features have now been beaten by the ascending-product-id fallback at that cell, which we read as evidence that the incumbent prior is genuinely well matched to this catalog rather than as ten near-misses.
 
 ---
 
@@ -287,6 +324,12 @@ We mitigated the statistical risks this creates (six disjoint single-use splits,
 We are happy to walk the review team through exactly which numbers were fitted this way; the list is short (eight scalars) and every one of them is reproducible from the committed grid-search scripts.
 
 **Synthetic training data provenance.** The Stage-2 curriculum is generated from the competition catalog (the searchable collection), not from queries or judgments; we consider this equivalent to doc2query-style self-supervision and disclose it for completeness.
+
+**A gain we identified and declined to take.** Decomposing the remaining headroom showed that reordering the ten documents we already return - with no new candidate and no stronger model - is worth +0.0854 nDCG@10 (0.6938 -> 0.7792 under a perfect reordering), and that **45.5% of that is graded**: it requires placing grade 3 above grade 2, not relevant above irrelevant.
+Our cross-encoder is trained on binary targets and cannot express that distinction.
+The direct fix is to weight the training targets by `2^grade - 1`, and we did not do it, because the grades exist only in the benchmark judgment file that rule 2.4.b restricts to measurement.
+We verified there is no legal substitute rather than assuming one: both provided training files contain only `(query, positive_name, negative_name)` with no grade column, and the single grade-like signal legally available - how often a (query, positive) pair repeats in the training data - does not track benchmark grade at all (AUC 0.5084, mean-grade difference +0.048 on a 0-3 scale, and not monotone in the repeat count).
+We therefore record the largest clearly-identified remaining gain in this system as unreachable under the competition rules, which we consider a more useful disclosure than a silent omission.
 
 **Limitations.** The dialect handling is a curated eleven-token list, not a model; the loss autopsy shows filler-bearing queries still trail by 0.13 nDCG, and one-token generic queries remain the weakest segment (0.43).
 The system is tuned to this catalog's duplicate structure and id-grade correlation; portability of those priors is an empirical question.
