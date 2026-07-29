@@ -127,9 +127,15 @@ class Stack3:
             self.ltc[(q, i)] = v
         return v
 
-    def build(self, ce, lam=LAM):
-        """ce: dict[(qid, iid)] -> calibrated score in [0,1]."""
+    def build(self, ce, lam=LAM, priors=None, prior_max=RRF_MAX):
+        """ce: dict[(qid, iid)] -> calibrated score in [0,1].
+
+        priors/prior_max override the RRF prior so alternative fusion functions
+        (convex combination, rank-biased centroids) can be swapped in with the rest
+        of the transform held fixed.
+        """
         h = self.h
+        priors = h.priors if priors is None else priors
         conf = {}
         for q in h.qids:
             v = sorted((ce[(q, i)] for i in h.pools[q]), reverse=True)
@@ -140,7 +146,7 @@ class Stack3:
                    + self.ft(qq, i) * S_FT + self.lt(qq, i) * S_LT)
             scored = []
             for i in h.pools[q]:
-                v = (lam * ce[(q, i)] + (1 - lam) * h.priors[q][i] / RRF_MAX
+                v = (lam * ce[(q, i)] + (1 - lam) * priors[q].get(i, 0.0) / prior_max
                      + BETA_MP * self.mp(q, i) + BETA_FT * self.ft(q, i)
                      + B_IDF * self.xi(q, i))
                 scored.append((v, i))
