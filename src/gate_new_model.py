@@ -52,8 +52,13 @@ def main():
                          "rerank_qwen3-reranker-arabic-ecom-rerank_v9listnet_len160_bfloat16")
     ap.add_argument("--qids", type=Path, required=True, help="slice to evaluate on")
     ap.add_argument("--mode", choices=["retune", "gate"], default="retune")
-    ap.add_argument("--temps", default="1.6,2.2,2.6,3.2,4.0,5.0")
-    ap.add_argument("--lams", default="0.35,0.40,0.45,0.50,0.55,0.60")
+    # WIDE by default. A new loss produces a different logit scale, so the incumbent
+    # T=3.2 / lam=0.50 is the wrong prior for it: ListNet shapes a softmax over the group
+    # while LambdaLoss shapes pairwise margins. Cost of a wide grid is dev-argmax
+    # inflation (more cells, higher max by luck), which is why the retune pass only
+    # PROPOSES constants and the verdict is taken on the clean arbiter at frozen values.
+    ap.add_argument("--temps", default="1.0,1.6,2.2,2.6,3.2,4.0,5.0")
+    ap.add_argument("--lams", default="0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.90")
     ap.add_argument("--temp", type=float, default=None, help="gate mode: frozen T")
     ap.add_argument("--lam", type=float, default=None, help="gate mode: frozen lam")
     args = ap.parse_args()
@@ -112,6 +117,15 @@ def main():
         for m, t, T, lam in results[:5]:
             print(f"  T={T:<5.1f} lam={lam:<5.2f}  {m:+.6f}  t {t:+.2f}")
         m, t, T, lam = results[0]
+        # An argmax on the EDGE of the grid is not an optimum, it is a grid that was too
+        # narrow; the project requires optima bracketed on both sides before believing them.
+        Ts = sorted({r[2] for r in results})
+        Ls = sorted({r[3] for r in results})
+        edge = T in (Ts[0], Ts[-1]) or lam in (Ls[0], Ls[-1])
+        if edge:
+            print(f"\n  *** WARNING: argmax sits on the grid EDGE (T={T}, lam={lam}). "
+                  f"Widen the grid;\n      an unbracketed optimum has not been shown to be "
+                  f"one.")
         interior = any(abs(r[2] - T) > 1e-9 for r in results[:5]) and \
             any(abs(r[3] - lam) > 1e-9 for r in results[:5])
         print(f"\nARGMAX T={T} lam={lam} delta {m:+.6f}")

@@ -62,7 +62,7 @@ class Stack3:
     build() instead, so the transform itself exists in exactly one place.
     """
 
-    def __init__(self, qids, cache_stem=STEM.format("v7synth"), T=T_LIVE):
+    def __init__(self, qids, cache_stem=STEM.format("v7synth"), T=T_LIVE, depth=100):
         corpus = load_jsonl(BENCH / "corpus.jsonl")
         norm = {str(r["item_id"]): normalize_arabic(r["name"]) for r in corpus}
         self.ntok = {i: n.split() for i, n in norm.items()}
@@ -75,7 +75,7 @@ class Stack3:
         self.idf = lambda t: math.log(1.0 + N / (df.get(t, 0) + 0.5))
 
         self.h = Harness(qids, T=T, cache_stem=cache_stem,
-                         weights=[3.0, 1.0], rrf_k=60)
+                         weights=[3.0, 1.0], rrf_k=60, depth=depth)
         h = self.h
         self.qt, self.qbest = {}, {}
         for q in h.qids:

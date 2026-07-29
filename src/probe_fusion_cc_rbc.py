@@ -33,12 +33,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from common import BENCH, DATA, ROOT, load_jsonl, load_qid_file, load_run_csv, setup_utf8
+from common import BENCH, DATA, ROOT, load_jsonl, load_qid_file, load_run_csv, \
+    setup_utf8, tokenize
 from eval_ndcg import ndcg_at_k
 from probe_ensemble_current import RRF_MAX, Stack3
 from probe_harness import stream_topk
 from probe_score_prior import build_word_bm25
-from stacker_features import tokenize
 
 setup_utf8()
 
@@ -124,7 +124,7 @@ def main():
     for phi in [float(x) for x in args.phis.split(",")]:
         pri, pmax = rbc_prior([bm_rank, dn_rank], [3.0, 1.0], phi, h.qids)
         for lam in [float(x) for x in args.lams.split(",")]:
-            d = report(f"phi={phi:.2f} lam={lam:.2f}", S.build(h.ce, lam=lam,
+            d = report(f"phi={phi:.3f} lam={lam:.2f}", S.build(h.ce, lam=lam,
                                                                priors=pri, prior_max=pmax))
             best.append((d, f"RBC phi={phi} lam={lam}"))
 
