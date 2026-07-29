@@ -66,7 +66,13 @@ No weights, no GPU. Download `audit-bundle/` from the HF repo, copy its `runs/` 
 `data/cache/` into the repository root, then:
 
 ```bash
-./.venv/Scripts/python.exe src/rerank.py --runs runs/bm25_all.jsonl runs/dense_lora_v1_all.jsonl --depths 100 100 --weights 3 1 --rrf-k 60 --model models/qwen3-reranker-arabic-ecom-rerank_v7synth --temperature 2.6 --lam 0.60 --eps 0.010 --eps-hi 0.040 --conf-t 0.15 --tie-key cont3 --strip-fillers --name reproduction
+./.venv/Scripts/python.exe src/rerank.py \
+  --runs runs/bm25_all.jsonl runs/dense_lora_v1_all.jsonl --depths 100 100 \
+  --weights 3 1 --rrf-k 60 \
+  --model models/qwen3-reranker-arabic-ecom-rerank_v7synth \
+  --temperature 3.2 --lam 0.50 --eps 0.030 --eps-hi 0.050 --conf-t 0.10 --conf-topk 3 \
+  --tie-key cont3posftlt --pos-bonus 0.35 --ft-bonus 0.05 --idf-bonus 0.05 \
+  --top-eps 0.080 --top-k-eps 5 --strip-fillers --name reproduction
 ```
 
 Every cross-encoder score is already cached, so `--model` is used only to name the
@@ -76,8 +82,24 @@ cache; no weights are loaded and the GPU is never touched. Then verify:
 ./.venv/Scripts/python.exe src/eval_ndcg.py --run runs/reproduction.csv
 ```
 
-Expected: `nDCG@10 = 0.667745`, `queries_missing_from_run = 0`.
-That file is byte-identical to the submitted `runs/submission_v7synth_priorK60.csv`.
+Expected: `nDCG@10 = 0.693827`, `queries_missing_from_run = 0`.
+That file is byte-identical to the submitted `runs/submission_v7synth_stack3.csv`,
+whose public leaderboard score is **0.69362** (local minus 0.00021).
+
+### Reproducing the earlier submissions too
+
+Each shipped submission is the same command with fewer post-processing options, so any
+point on the leaderboard ladder can be re-derived and checked independently:
+
+| Expected nDCG@10 | Public LB | Change from the command above |
+|---|---|---|
+| 0.693827 | 0.69362 | (as written above) |
+| 0.689919 | 0.68946 | drop `--idf-bonus --top-eps --top-k-eps`, use `--tie-key cont3posft` |
+| 0.684938 | 0.68527 | additionally drop `--ft-bonus`, use `--tie-key cont3pos` |
+| 0.667745 | 0.66738 | `--temperature 2.6 --lam 0.60 --eps 0.010 --eps-hi 0.040 --conf-t 0.15 --tie-key cont3` |
+
+These four are the standing regression checks for the codebase: any change that breaks
+one of them is rejected regardless of how it scores.
 
 ---
 
