@@ -143,6 +143,7 @@ def build_groups(
     hard_cap: int = 6,
     raw: bool = False,
     max_groups: int = 0,
+    pos_gain: float = 1.0,
 ) -> Dataset:
     """v2 groups: <=4 pos + <=hard_cap provided hard + n_random random.
 
@@ -197,7 +198,7 @@ def build_groups(
                 i += 1
             negs.append(rng[i % len(rng)])
             i += 1
-        rows.append((q, pos + negs, [1.0] * len(pos) + [0.0] * len(negs)))
+        rows.append((q, pos + negs, [pos_gain] * len(pos) + [0.0] * len(negs)))
     sizes = [len(docs) for _, docs, _ in rows]
     print(
         f"groups: {len(rows)} queries, docs/group mean {sum(sizes) / len(sizes):.2f} "
@@ -227,7 +228,30 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--run-name", default=None, help="default: rerank_v1 or rerank_smoke")
-    p.add_argument("--loss", choices=["bce", "lambda"], default="bce")
+    p.add_argument("--loss", default="bce",
+                   choices=["bce", "lambda", "listnet", "ranknet", "listmle", "plistmle"],
+                   help="the objective. Six model generations all used 'lambda' with its "
+                        "DEFAULT settings and the only other loss ever tried was 'bce' (v1, "
+                        "failed on the 4.1%% label-grounding fact), so the objective is the "
+                        "one axis of the recipe that has never been varied. All choices "
+                        "except bce consume the same (query, docs, labels) groups")
+    p.add_argument("--lambda-scheme", default="ndcg2pp",
+                   choices=["ndcg2pp", "ndcg1", "ndcg2", "lambdarank", "none"],
+                   help="LambdaLoss pair weighting; ndcg2pp is the shipped default. "
+                        "'none' makes LambdaLoss equivalent to unweighted RankNet")
+    p.add_argument("--lambda-sigma", type=float, default=1.0,
+                   help="score-difference scale inside the pairwise sigmoid (lambda/ranknet)")
+    p.add_argument("--lambda-k", type=int, default=0,
+                   help="truncate the loss to the top k predicted positions (0 = no "
+                        "truncation, the shipped default). NOTE this knob is nearly inert "
+                        "on our data: 86.6%% of groups hold exactly 4 documents and only "
+                        "1.62%% hold more than 10, so k=10 can only touch that 1.62%%")
+    p.add_argument("--pos-gain", type=float, default=1.0,
+                   help="label value for positives (negatives stay 0.0). Under ListNet the "
+                        "target is softmax(labels), so the shipped 1.0 gives a positive only "
+                        "2.7x the mass of each negative in a 4-document group; raising this "
+                        "sharpens the target toward the one-hot InfoNCE shape that the "
+                        "retriever's MNRL used. Under LambdaLoss it rescales the nDCG gains")
     p.add_argument("--mined", type=Path, default=None, help="mined-negatives parquet (v3 groups)")
     p.add_argument("--hard-cap", type=int, default=6, help="provided hard negatives per group")
     p.add_argument("--n-random", type=int, default=2, help="random catalog negatives per group")
@@ -264,7 +288,7 @@ def main():
                         "inside 8 GB, at roughly 30 percent extra step time")
     args = p.parse_args()
     if args.mined is not None:
-        assert args.loss == "lambda", "--mined requires --loss lambda"
+        assert args.loss != "bce", "--mined requires a group loss, not bce"
         base_name = "rerank_v3"
     else:
         base_name = "rerank_v1" if args.loss == "bce" else "rerank_v2"
@@ -280,7 +304,19 @@ def main():
         CrossEncoderTrainer,
         CrossEncoderTrainingArguments,
     )
-    from sentence_transformers.cross_encoder.losses import BinaryCrossEntropyLoss, LambdaLoss
+    from sentence_transformers.cross_encoder.losses import (
+        BinaryCrossEntropyLoss,
+        LambdaLoss,
+        LambdaRankScheme,
+        ListMLELoss,
+        ListNetLoss,
+        NDCGLoss1Scheme,
+        NDCGLoss2PPScheme,
+        NDCGLoss2Scheme,
+        NoWeightingScheme,
+        PListMLELoss,
+        RankNetLoss,
+    )
 
     from merge_adapter import merge
 
@@ -297,7 +333,8 @@ def main():
         else:
             dataset = build_groups(
                 args.smoke, n_random=args.n_random, mined_path=args.mined,
-                hard_cap=args.hard_cap, max_groups=args.max_groups
+                hard_cap=args.hard_cap, max_groups=args.max_groups,
+                pos_gain=args.pos_gain
             )
 
     model_kwargs = {"torch_dtype": torch.bfloat16}
@@ -352,10 +389,32 @@ def main():
     print(f"trainable params: {trainable:,} / {total:,} ({100 * trainable / total:.2f}%)")
     assert not model[0].auto_model.score.weight.requires_grad, "score head must stay frozen"
 
+    # Every group loss keeps mini_batch_size=16: it bounds the FORWARD chunk only, not
+    # memory (all chunk graphs are retained for backward, trap 3.4), so it is held fixed
+    # across losses to keep the comparison single-variable.
     if args.loss == "bce":
         loss = BinaryCrossEntropyLoss(model)
+    elif args.loss == "lambda":
+        scheme = {
+            "ndcg2pp": NDCGLoss2PPScheme(),
+            "ndcg1": NDCGLoss1Scheme(),
+            "ndcg2": NDCGLoss2Scheme(),
+            "lambdarank": LambdaRankScheme(),
+            "none": NoWeightingScheme(),
+        }[args.lambda_scheme]
+        loss = LambdaLoss(model, weighting_scheme=scheme, k=(args.lambda_k or None),
+                          sigma=args.lambda_sigma, mini_batch_size=16)
+    elif args.loss == "listnet":
+        loss = ListNetLoss(model, mini_batch_size=16)
+    elif args.loss == "ranknet":
+        loss = RankNetLoss(model, k=(args.lambda_k or None), sigma=args.lambda_sigma,
+                           mini_batch_size=16)
+    elif args.loss == "listmle":
+        loss = ListMLELoss(model, mini_batch_size=16)
     else:
-        loss = LambdaLoss(model, mini_batch_size=16)
+        loss = PListMLELoss(model, mini_batch_size=16)
+    print(f"loss: {type(loss).__name__} "
+          f"{getattr(loss, 'get_config_dict', dict)()}")
 
     train_args = CrossEncoderTrainingArguments(
         output_dir=str(out_dir),
