@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-sys.path.insert(0, r"C:\Users\LOQ\presto_v2\src")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 
