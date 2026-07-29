@@ -103,6 +103,11 @@ def main():
                    help="populate the score cache, write no runs and evaluate nothing")
     p.add_argument("--n-queries", type=int, default=0, help="0 = all (after qid filter)")
     p.add_argument("--batch", type=int, default=128)
+    p.add_argument("--chunk", type=int, default=150_000,
+                   help="flush the score cache to disk every this many pairs. At ~137 "
+                        "pairs/s that is a checkpoint roughly every 18 min, so a power cut "
+                        "costs minutes rather than the whole pass; re-running the same "
+                        "command resumes from the cache automatically")
     p.add_argument("--max-seq", type=int, default=160)
     p.add_argument("--dtype", choices=["bfloat16", "float32"], default="bfloat16")
     p.add_argument("--lam", type=float, default=0.5, help="blend: lam*ce + (1-lam)*rrf/rrf_max")
@@ -225,11 +230,29 @@ def main():
         model[0].max_seq_length = args.max_seq
         pairs = [[format_query(qtext[qid]), format_document(names[iid])] for qid, iid in todo]
         t0 = time.time()
-        scores = model.predict(pairs, batch_size=args.batch, show_progress_bar=True)
+        # CHECKPOINTED scoring. This used to be one predict() over every pair with a single
+        # save at the end, which meant an interrupted run wrote NOTHING: a power cut at 55%
+        # of a 4.9 h pass on 2026-07-29 destroyed three hours of GPU with the cache file
+        # byte-identical to before it started. Power cuts have now hit this machine four
+        # times, so the long pass is chunked and the cache is flushed after every chunk.
+        # save_cache writes to a temp file and renames, so a cut DURING a flush leaves the
+        # previous good cache intact rather than a truncated one.
+        # Re-running the same command skips whatever is already cached (todo is built by
+        # difference), so an interrupted pass resumes simply by launching it again.
+        done = 0
+        for s0 in range(0, len(todo), args.chunk):
+            block = todo[s0: s0 + args.chunk]
+            sc = model.predict([pairs[k] for k in range(s0, s0 + len(block))],
+                               batch_size=args.batch, show_progress_bar=True)
+            for (qid, iid), s in zip(block, sc):
+                cache[(qid, iid)] = float(s)
+            save_cache(cache_path, cache)
+            done += len(block)
+            el = (time.time() - t0) / 60
+            rate = done / max(el, 1e-9)
+            print(f"  checkpoint: {done:,}/{len(todo):,} pairs, {el:.1f} min elapsed, "
+                  f"~{(len(todo) - done) / max(rate, 1e-9):.0f} min left", flush=True)
         print(f"scored {len(todo)} pairs in {(time.time() - t0) / 60:.1f} min")
-        for (qid, iid), s in zip(todo, scores):
-            cache[(qid, iid)] = float(s)
-        save_cache(cache_path, cache)
 
     if args.score_only:
         print(f"score-only: cache now {len(cache)} scores, no runs written")
