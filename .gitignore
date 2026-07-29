@@ -10,3 +10,6 @@ wandb/
 
 # distribution bundles (large binary artifacts)
 dist/
+
+# private study material, deliberately not shared
+docs/STUDY_GUIDE.md
