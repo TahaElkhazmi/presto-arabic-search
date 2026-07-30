@@ -2,16 +2,16 @@
 
 `data/benchmark/data/candidates.jsonl` is the judged pool: per query a short list of
 items WITH their relevance grades. It ships in the public HuggingFace benchmark repo
-(`prestoai/arabic-ecom-search-bench`), which is why this competition has already had
-two answer-key entries invalidated.
+(`prestoai/arabic-ecom-search-bench`).
 
-The question this answers: if someone used that file as their retrieval source and
-ordered it with a model carrying little or no signal, what would the leaderboard
-show? Because those pools are ~62% positive by construction, even a RANDOM ordering
-scores far above anything a real full-catalog system achieves.
+The question this answers: if that file were used as a retrieval source and ordered
+with a model carrying little or no signal, what score would result? Because those
+pools are ~62% positive by construction, even a RANDOM ordering scores far above
+anything a real full-catalog system achieves over 107,041 products.
 
-Reproduced here from scratch rather than taken on trust, because the conclusion
-drives whether we spend the remaining days chasing 0.71412 or defending rank 2.
+The result is a useful sanity bound when interpreting any nDCG figure on this
+benchmark, including our own: it establishes what a score has to exceed before it can
+be evidence of retrieval quality rather than of pool composition.
 Measurement only; nothing here is used to build or tune a submission.
 """
 
