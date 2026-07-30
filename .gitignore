@@ -13,3 +13,21 @@ dist/
 
 # private study material, deliberately not shared
 docs/STUDY_GUIDE.md
+
+# Internal working documents: agent handoffs, planning, the raw experiment log and
+# the external-brainstorm prompt. Kept locally. They contain session logistics,
+# superseded plans, competitive analysis and a judge's private remark, none of which
+# belong in a repository that is handed over for audit. The curated public forms are
+# TECHNICAL_REPORT.md (including all negative results) and README.md.
+FINDINGS.md
+NEXT_SESSION_BRIEF.md
+PROJECT_CONTEXT_TRANSFER.md
+EXTERNAL_BRAINSTORM_PROMPT.md
+COMPETITION_GUIDE.md
+PHASE2_PLAN.md
+PHASE3_DISTILLATION_PLAN.md
+PHASE4_PLAN.md
+docs/phase6_roadmap.md
+.codex/
+.mcp.json
+scripts/stacker_ce_pass.sh

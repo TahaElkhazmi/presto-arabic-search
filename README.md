@@ -1,18 +1,20 @@
-# PrestoAI Arabic E-Commerce Search - rank 1 system
+# PrestoAI Arabic E-Commerce Search
 
 Hybrid retrieval + calibrated cross-encoder re-ranking for Arabic (Libyan-dialect)
 e-commerce product search.
-Final public leaderboard: **0.66738 nDCG@10, rank 1** (team Looooop Gain03).
+Final public leaderboard: **0.69362 nDCG@10** (team Looooop Gain03), across seventeen
+submissions each predicted in advance to within +-0.0014 by the local harness.
 
 | Document | Contents |
 |---|---|
-| [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) | The full writeup: architecture, methodology, results, ten negative results, design rationale, compliance disclosures. **Read this first.** |
-| [`FINDINGS.md`](FINDINGS.md) | Dated log of every experiment ever run, with the numbers. The primary evidence base. |
-| This file | How to set up and run the system. |
+| [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) | The full writeup: architecture, evaluation methodology, the positive path, nineteen diagnosed negative results, design rationale and compliance disclosures. **Read this first.** |
+| This file | How to set up, run and reproduce the system. |
 
-Model weights and a zero-GPU reproduction bundle live in a separate private
-repository (`TahaElkhazmi/presto-arabic-search-models` on Hugging Face) because they
-are too large for git. Ask Taha for access.
+Model weights and a zero-GPU reproduction bundle live in a companion Hugging Face
+repository, `TahaElkhazmi/presto-arabic-search-models`, because they are too large for
+git. Its `audit-bundle/REPRODUCE.md` reproduces the submitted file without a GPU and
+without model weights; the same instructions are mirrored at
+[`hf_bundle/REPRODUCE.md`](hf_bundle/REPRODUCE.md).
 
 ---
 
@@ -125,7 +127,7 @@ query, product = "نبي حليب اطفال", "حليب نيدو للاطفال
 score = model.predict([[format_query(query), format_document(product)]])[0]
 
 # apply the calibration used in production
-T = 2.6
+T = 3.2
 logit = math.log(score / (1 - score))
 calibrated = 1 / (1 + math.exp(-logit / T))
 print(score, calibrated)
@@ -187,7 +189,8 @@ are skipped instantly. Then generate the submission with the section 1 command
 ## 4. Full training pipeline from scratch
 
 Roughly 20 GPU-hours total on an 8 GB card. **Reranker training is not resumable**
-(`--resume` is broken for this recipe - see `FINDINGS.md` 2026-07-20/21), so treat
+(`--resume` restores the LoRA adapter but transformers v5 refuses to `torch.load` the
+optimizer state below torch 2.6, and this project is pinned to 2.5.1), so treat
 each training command as non-interruptible.
 
 ### 4a. Dense retriever
@@ -239,7 +242,7 @@ Then train (~2.8 h):
 
 **Do not raise `--mini-batch` above 2.** Beyond ~20 pair-sequences per step this
 spills into system RAM and step time degrades from ~9.5 s to ~30 s with no error
-message (`FINDINGS.md` 2026-07-16).
+message.
 
 ---
 
@@ -256,8 +259,8 @@ pristine split; all are cache-only and CPU-only:
 | `loss_autopsy.py` | per-query error decomposition against the pool oracle |
 | `grid_search_ensemble.py`, `mini_probes_v7.py` | the closing negative results |
 
-Splits are seeded and committed under `splits/`; re-running reproduces the numbers in
-`FINDINGS.md` exactly.
+Splits are seeded and committed under `splits/`, so re-running reproduces the numbers in
+the technical report exactly.
 
 ---
 
