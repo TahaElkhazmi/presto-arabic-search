@@ -150,11 +150,14 @@ def main():
             print("  *** dense cache does not cover the pools - skipping CC ***")
             return
 
+        # W is (vocab x documents), so query terms select ROWS and we sum over terms to
+        # get a per-document score. Indexing it as W[:, idx] silently selects DOCUMENT
+        # columns by term id, which is a different matrix entirely.
         lex = {}
         for q in h.qids:
             idx = [vocab[t] for t in tokenize(h.queries[q]) if t in vocab]
             if idx:
-                col = np.asarray(W[:, idx].sum(axis=1)).ravel()
+                col = np.asarray(W[idx].sum(axis=0)).ravel()
             else:
                 col = np.zeros(len(item_ids))
             lex[q] = {i: float(col[row_of[i]]) for i in h.pools[q]}
