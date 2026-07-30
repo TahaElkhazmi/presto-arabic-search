@@ -22,6 +22,15 @@ WHAT THIS SCRIPT DECIDES, before any implementation effort:
 AUC is computed WITHIN each query and aggregated, never pooled - the estimator error this
 project already made once and corrected.
 
+CORRECTED 2026-07-30. This script originally loaded our live ranking with `load_run_csv`,
+which TRUNCATES TO THE TOP 10, and then scored every remaining pool item with a single
+sentinel. Our 166-item ordering was therefore evaluated as a 10-item list plus a 156-way
+tie, and its membership AUC came out at 0.7476 against the hybrid's 0.8446 - which read as
+"a signal our system is measurably bad at" and was recorded that way. Scored on the FULL
+ranking from the run's .jsonl, our ordering is at 0.8903 and BEATS the hybrid at every
+depth. The conclusion (membership does not convert) is unchanged; the reason is the
+opposite of what was written. See probe_pool_membership_conditioned output in FINDINGS.
+
 candidates.jsonl is read for MEASUREMENT ONLY here.
 """
 
@@ -35,7 +44,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 
 from common import BENCH, DATA, ROOT, load_jsonl, load_run_csv, setup_utf8, tokenize
-from eval_ndcg import load_candidates
+from eval_ndcg import load_candidates, load_run_jsonl
 from probe_harness import stream_topk
 from probe_phase3_predicates import per_query_auc
 from probe_score_prior import build_word_bm25
@@ -52,7 +61,11 @@ def main():
     qpos = {q: k for k, q in enumerate(qids)}
     qrels = load_candidates(BENCH / "candidates.jsonl")
 
-    live = load_run_csv(ROOT / "runs" / "submission_v7synth_stack3.csv")
+    # top-10 view, used only for the composition table below
+    live = load_run_csv(ROOT / "runs" / "submission_v7synth_stack5.csv")
+    # FULL ranking, used for the AUC comparison. load_run_csv truncates to 10; using it
+    # here is the bug this file documents, so the .jsonl is read instead.
+    live_full = load_run_jsonl(ROOT / "runs" / "submission_v7synth_stack5.jsonl")
 
     # ---------- 1. how much of the shipped top-10 is unjudged? ----------
     judged = pos = tot = 0
@@ -108,9 +121,10 @@ def main():
         cosn = (cos - cos.min()) / (cos.max() - cos.min() + 1e-9)
         hyb = 0.7 * bmn + 0.3 * cosn          # Meilisearch semanticRatio 0.3
 
-        # rank of the live system: earlier in our own top-10 = better
-        order = {i: -k for k, i in enumerate(live.get(q, []))}
-        blend = np.array([order.get(i, -999) for i in pool], dtype=np.float32)
+        # rank of the live system over its FULL ordering (not the top-10 truncation)
+        order = {i: -k for k, i in enumerate(live_full.get(q, []))}
+        worst = -len(pool) - 1
+        blend = np.array([order.get(i, worst) for i in pool], dtype=np.float32)
         lid = np.array([-int("".join(c for c in i if c.isdigit()) or 0) for i in pool],
                        dtype=np.float64)
 

@@ -14,6 +14,20 @@ cross-encoder is trained on BINARY labels while the metric pays 2^grade - 1. If 
 binary-perfect ordering already captures most of (1), grade modelling is worthless here;
 if not, it is the one signal the training objective never encoded.
 
+TWO BINARY ORACLES, and the difference is not cosmetic. A binary signal only says
+relevant-or-not; it has no opinion INSIDE either class, so the split depends entirely on
+what you assume happens there.
+  - id-tiebreak: re-sort the relevant class by ascending product id. This throws away the
+    ordering our blend produced and replaces it with the fallback prior.
+  - PARTITION (order-preserving): keep our existing order inside each class. This is how
+    this system actually deploys every discrete feature - see the trap-1 result, "the
+    cascade sorts by (-feature, +id): a discrete feature PARTITIONS the cell and the
+    incumbent still orders inside each class. Nothing is displaced."
+The partition form is the correct upper bound on what a binary model could buy us, because
+it is the only one a real feature could be plumbed into. This script originally reported
+only the id-tiebreak form, which understated the binary oracle by 0.0258 and inflated the
+"graded share" of the reorder headroom from 15.4% to 45.7%. Both are printed now.
+
 Measurement only (rule 2.4.b): qrels are read to score, never to fit.
 """
 
@@ -53,7 +67,7 @@ def main():
     bm = stream_topk(ROOT / "runs" / "bm25_all.jsonl", args.depth, qset)
     dn = stream_topk(ROOT / "runs" / "dense_lora_v1_all.jsonl", args.depth, qset)
 
-    live = reorder = binonly = reselect = 0.0
+    live = reorder = binonly = binpart = reselect = 0.0
     n = 0
     slots = Counter()
     for q in all_qids:
@@ -73,6 +87,12 @@ def main():
         #     binary-labelled model could do with our ten)
         binonly += ndcg_at_k(
             sorted(top, key=lambda i: (0 if rel.get(i, 0) > 0 else 1, _id_key(i))), rel, 10)
+        # 1c. perfect binary PARTITION: same relevant-vs-not split, but our own order is
+        #     preserved inside each class (sorted() is stable). This is the shape every
+        #     discrete feature in this system is actually deployed in, and therefore the
+        #     honest upper bound on what a binary model could buy.
+        binpart += ndcg_at_k(
+            sorted(top, key=lambda i: 0 if rel.get(i, 0) > 0 else 1), rel, 10)
         # 2. perfect RESELECT from the whole pool
         seen, pool = set(), []
         for r in (bm, dn):
@@ -89,15 +109,20 @@ def main():
         print(f"  {k:<12s} {slots[k]:>8,} ({100*slots[k]/st:5.2f}%)")
 
     print(f"\n=== headroom decomposition")
-    print(f"  live shipped system              {live/n:.6f}")
-    print(f"  + perfect BINARY reorder of our own 10   {binonly/n:.6f}  "
+    print(f"  live shipped system                          {live/n:.6f}")
+    print(f"  + binary oracle, relevant class re-sorted by id  {binonly/n:.6f}  "
           f"(+{(binonly-live)/n:.6f})")
-    print(f"  + perfect GRADED reorder of our own 10   {reorder/n:.6f}  "
+    print(f"  + binary oracle as a PARTITION (order kept)      {binpart/n:.6f}  "
+          f"(+{(binpart-live)/n:.6f})   <- the honest bound")
+    print(f"  + perfect GRADED reorder of our own 10           {reorder/n:.6f}  "
           f"(+{(reorder-live)/n:.6f})")
-    print(f"  + perfect reselect from the pool        {reselect/n:.6f}  "
+    print(f"  + perfect reselect from the pool                 {reselect/n:.6f}  "
           f"(+{(reselect-reorder)/n:.6f} beyond reorder)")
-    print(f"\n  of the reorder headroom, the GRADED part is "
-          f"{100*(reorder-binonly)/max(reorder-live,1e-9):.1f}%")
+    print(f"\n  GRADED share of the reorder headroom:")
+    print(f"    against the id-tiebreak binary oracle   "
+          f"{100*(reorder-binonly)/max(reorder-live,1e-9):.1f}%   (overstated)")
+    print(f"    against the PARTITION binary oracle     "
+          f"{100*(reorder-binpart)/max(reorder-live,1e-9):.1f}%   <- correct")
     print(f"  ANY post-processing rule on the current top-10 is capped at "
           f"{reorder/n:.6f}")
 

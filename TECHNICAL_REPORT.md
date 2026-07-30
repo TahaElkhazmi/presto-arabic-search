@@ -1,16 +1,16 @@
 # Hybrid Retrieval and Calibrated Re-ranking for Arabic E-Commerce Search
 
 **Technical Report - PrestoAI Arabic E-Commerce Search Retrieval Challenge**
-Team **Looooop Gain03** - public leaderboard score **0.69362 nDCG@10** across seventeen submissions, each predicted in advance to within +-0.0014 by a local harness.
+Team **Looooop Gain03** - public leaderboard score **0.69413 nDCG@10** across eighteen submissions, each predicted in advance to within +-0.0014 by a local harness.
 
 ---
 
 ## 1. Abstract
 
-This report describes the system built for the PrestoAI Arabic E-Commerce Search Retrieval Challenge, which held rank 1 for most of the competition and stands at 0.69362 nDCG@10.
+This report describes the system built for the PrestoAI Arabic E-Commerce Search Retrieval Challenge, which held rank 1 for most of the competition and stands at 0.69413 nDCG@10.
 The final system is a three-layer pipeline: hybrid lexical-dense candidate retrieval fused with reciprocal-rank fusion, a three-stage fine-tuned Qwen3 cross-encoder re-ranker, and a calibrated post-processing layer that resolves the re-ranker's low-confidence zone with character-level lexical evidence and dialect-aware query normalization.
 Beyond the architecture, we believe the main contribution of this work is methodological.
-Every change was measured against a local evaluation harness that predicted the public leaderboard to within +-0.0014 across all seventeen submissions, and every candidate improvement passed a pre-registered gate on pristine held-out splits before being shipped.
+Every change was measured against a local evaluation harness that predicted the public leaderboard to within +-0.0014 across all eighteen submissions, and every candidate improvement passed a pre-registered gate on pristine held-out splits before being shipped.
 Five findings shaped the outcome.
 (1) The provided training labels are only 8-17% grounded in the scoring catalog, which invalidates absolute-relevance objectives and most supervised feature learning.
 (2) Synthetically generated, catalog-grounded training data beat the provided labels at teaching fine-grained product discrimination, producing the largest single MODEL improvement of the project.
@@ -61,7 +61,7 @@ We regard this as the load-bearing part of the project and describe it before th
 ### 3.1 Trusted local scorer and leaderboard calibration
 
 We re-implemented the official nDCG@10 and verified agreement with the organizer's scorer to four decimals on identical run files.
-The local full-benchmark score predicted the public leaderboard within **[-0.0014, +0.0003] across all twelve submissions** (the last six within +-0.0005).
+The local full-benchmark score predicted the public leaderboard to within **+-0.0014 across all eighteen submissions** (the last six within +-0.0005).
 This calibration converted the competition from a leaderboard-probing exercise into an offline experimental science: candidates were tuned on development splits, verified on validation, measured on the full benchmark, and only then submitted.
 
 ### 3.2 Split discipline and the measured cost of grid search
@@ -126,7 +126,7 @@ Every constant in this paragraph was fitted on a pristine split against the *fin
 
 ## 5. Experimental Record: the Positive Path
 
-Public leaderboard progression (every submission was locally predicted first; seventeen for seventeen inside tolerance):
+Public leaderboard progression (every submission was locally predicted first; eighteen for eighteen inside tolerance):
 
 | # | Change | Public LB |
 |---|---|---|
@@ -145,9 +145,10 @@ Public leaderboard progression (every submission was locally predicted first; se
 | 15 | + token match-position generalising the prefix key | 0.68254 |
 | 16 | + stack re-tune and match-position as an additive blend term | 0.68527 |
 | 17 | + first-token position as a key level and a blend term | 0.68822 |
-| 18 | + three stacked sub-gate changes (Section 5.8) | **0.69362** |
+| 18 | + three stacked sub-gate changes (Section 5.8) | 0.69362 |
+| 19 | + graded-exactness and proximity blend bonuses | **0.69413** |
 
-Rows 14-18 were all found in the final four days, entirely without GPU training, by
+Rows 14-19 were all found in the final four days, entirely without GPU training, by
 re-examining assumptions rather than adding capability; Sections 5.7 and 5.8 develop the two
 transferable lessons behind them.
 
@@ -325,11 +326,22 @@ We are happy to walk the review team through exactly which numbers were fitted t
 
 **Synthetic training data provenance.** The Stage-2 curriculum is generated from the competition catalog (the searchable collection), not from queries or judgments; we consider this equivalent to doc2query-style self-supervision and disclose it for completeness.
 
-**A gain we identified and declined to take.** Decomposing the remaining headroom showed that reordering the ten documents we already return - with no new candidate and no stronger model - is worth +0.0854 nDCG@10 (0.6938 -> 0.7792 under a perfect reordering), and that **45.5% of that is graded**: it requires placing grade 3 above grade 2, not relevant above irrelevant.
-Our cross-encoder is trained on binary targets and cannot express that distinction.
-The direct fix is to weight the training targets by `2^grade - 1`, and we did not do it, because the grades exist only in the benchmark judgment file that rule 2.4.b restricts to measurement.
+**A gain we identified and declined to take, and a correction to our own estimate of it.** Decomposing the remaining headroom showed that reordering the ten documents we already return - with no new candidate and no stronger model - is worth +0.0851 nDCG@10 (0.6946 -> 0.7797 under a perfect graded reordering).
+An earlier version of this report attributed **45.5%** of that to the graded distinction, i.e. to placing grade 3 above grade 2 rather than relevant above irrelevant. That figure was an artefact of how the binary oracle was computed and we correct it here rather than leave it standing.
+The binary oracle originally re-sorted the relevant class by ascending product id, which discards the ordering our own blend produced inside that class. But no discrete feature in this system is ever deployed that way: the cascade sorts by `(-feature, +id)`, so a binary signal PARTITIONS the list and the existing order survives inside each class - the same estimator point developed in Section 5.7. Scored as a partition, the binary oracle is 0.766600 rather than 0.740764, and the graded share of the reorder headroom is **15.4%, not 45.7%**.
+
+The corrected decomposition, all of it reproducible from `src/probe_headroom_autopsy.py`:
+
+| oracle over our own top-10 | nDCG@10 | gain |
+|---|---|---|
+| live system | 0.694591 | - |
+| perfect binary signal, deployed as a partition | 0.766600 | +0.072009 |
+| perfect graded reordering | 0.779702 | +0.085111 |
+
+The disclosure itself is unchanged and the direct fix would still be to weight training targets by `2^grade - 1`, which we did not do because the grades exist only in the benchmark judgment file that rule 2.4.b restricts to measurement.
 We verified there is no legal substitute rather than assuming one: both provided training files contain only `(query, positive_name, negative_name)` with no grade column, and the single grade-like signal legally available - how often a (query, positive) pair repeats in the training data - does not track benchmark grade at all (AUC 0.5084, mean-grade difference +0.048 on a 0-3 scale, and not monotone in the repeat count).
-We therefore record the largest clearly-identified remaining gain in this system as unreachable under the competition rules, which we consider a more useful disclosure than a silent omission.
+What changes is the size of the claim, and it changes against us: the rule-blocked portion is +0.0131, not +0.039, and **84.6% of the remaining reorder headroom is binary and fully permitted** - a target our cross-encoder is already trained on and which we simply could not capture.
+We prefer to state that than to keep a larger number that happened to flatter the constraint we were operating under.
 
 **Limitations.** The dialect handling is a curated eleven-token list, not a model; the loss autopsy shows filler-bearing queries still trail by 0.13 nDCG, and one-token generic queries remain the weakest segment (0.43).
 The system is tuned to this catalog's duplicate structure and id-grade correlation; portability of those priors is an empirical question.
