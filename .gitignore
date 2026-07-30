@@ -31,3 +31,6 @@ docs/phase6_roadmap.md
 .codex/
 .mcp.json
 scripts/stacker_ce_pass.sh
+
+# probe run logs (outputs, not source)
+logs/
