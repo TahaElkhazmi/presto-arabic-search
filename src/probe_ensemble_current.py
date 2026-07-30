@@ -184,10 +184,16 @@ def main():
     ap.add_argument("--temps", default="2.3,3.2")
     ap.add_argument("--logit-mean", action="store_true")
     ap.add_argument("--three-way", action="store_true")
+    ap.add_argument("--qids", type=Path,
+                    default=ROOT / "splits" / "holdout_remainder8012.txt",
+                    help="slice to search the mixing weight on. A partner whose cache "
+                         "covers only the gate slices needs this pointed at one of them.")
+    ap.add_argument("--fixed-w", type=float, default=None,
+                    help="skip the search and evaluate ONE weight, for verifying a weight "
+                         "chosen elsewhere on an untouched slice")
     args = ap.parse_args()
 
-    hold = load_qid_file(ROOT / "splits" / "holdout_remainder8012.txt")
-    qids = sorted(hold, key=int)
+    qids = sorted(load_qid_file(args.qids), key=int)
     print(f"building stack3 harness over {len(qids):,} holdout queries ...", flush=True)
     S = Stack3(qids)
     h = S.h
@@ -226,7 +232,8 @@ def main():
             continue
         raws[p] = raw
 
-    ws = [float(x) for x in args.weights.split(",")]
+    ws = [args.fixed_w] if args.fixed_w is not None else \
+        [float(x) for x in args.weights.split(",")]
     ts = [float(x) for x in args.temps.split(",")]
     mode = "logit" if args.logit_mean else "prob"
     print(f"\nmix space: {mode}   (w = weight on the PARTNER, 0 = live system)")
