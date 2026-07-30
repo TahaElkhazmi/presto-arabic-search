@@ -173,6 +173,17 @@ def main():
                         "(+0.0012)")
     p.add_argument("--top-k-eps", type=int, default=5,
                    help="how many leading ranks --top-eps applies to")
+    p.add_argument("--pt-bonus", type=float, default=0.0,
+                   help="additive blend weight for graded exactness below exact match: "
+                        "the query's first token appearing as a PREFIX of a longer title "
+                        "word, or within edit distance 1 of one. Fires only where exact "
+                        "match fails, so it cannot displace first-token position. "
+                        "Shipped value 0.05; 0 reproduces the pre-existing behaviour")
+    p.add_argument("--px-bonus", type=float, default=0.0,
+                   help="additive blend weight for the bucketed proximity of the query's "
+                        "tokens within the title (slack 0 / 1 / <=3 / more). Bucketed "
+                        "rather than continuous because continuous signals have lost "
+                        "every time against the low-id prior. Shipped value 0.04")
     p.add_argument("--ft-bonus", type=float, default=0.0,
                    help="same trick as --pos-bonus, applied to FIRST-TOKEN position: add "
                         "this multiple of it to the blend so it reorders candidates whose "
@@ -365,6 +376,103 @@ def main():
                 return 0.0
             return 3.0 / (1.0 + toks.index(q[0]))
 
+        def _ed1(a: str, b: str) -> bool:
+            """Edit distance(a, b) <= 1. Bounded and early-exiting, not a full DP."""
+            la, lb = len(a), len(b)
+            if abs(la - lb) > 1:
+                return False
+            if la == lb:
+                diff = 0
+                for x, y in zip(a, b):
+                    if x != y:
+                        diff += 1
+                        if diff > 1:
+                            return False
+                return True
+            if la > lb:
+                a, b, la, lb = b, a, lb, la
+            i = j = diff = 0
+            while i < la and j < lb:
+                if a[i] == b[j]:
+                    i += 1
+                    j += 1
+                else:
+                    diff += 1
+                    if diff > 1:
+                        return False
+                    j += 1
+            return True
+
+        def _first_word_fuzzy(qid: str, iid: str, pred) -> float:
+            """3/(1+k) for the first title token satisfying pred against the query's first
+            token, and 0 when that token matches EXACTLY - so this only ever fires on the
+            residue first_token_position leaves behind, and cannot displace it."""
+            q = qtoks_stripped[qid]
+            if not q:
+                return 0.0
+            a, toks = q[0], _norm(iid).split()
+            if a in toks:
+                return 0.0
+            for k, t in enumerate(toks):
+                if pred(a, t):
+                    return 3.0 / (1.0 + k)
+            return 0.0
+
+        def prefix_typo_position(qid: str, iid: str) -> float:
+            """Graded exactness below exact match: the query's first token appearing as a
+            PREFIX of a longer title word, or within edit distance 1 of one.
+
+            Motivated by Meilisearch's own ranking, which treats a term as matching
+            exactly, as a prefix, or with a typo, while our match_position and
+            first_token_position both use token EQUALITY and score 0 on the other two.
+            Arabic makes this concrete: clitics attach directly, so a query token is
+            frequently a strict prefix of the title's word.
+
+            Each level fires on only 1-3% of candidates, which is why it is worth +0.0007
+            rather than +0.007 - low coverage, positive edge. Sub-gate alone, retained
+            because it is positive on all four evaluation slices.
+            """
+            return (_first_word_fuzzy(qid, iid, lambda a, t: t.startswith(a) and t != a)
+                    + _first_word_fuzzy(qid, iid,
+                                        lambda a, t: len(a) >= 4 and _ed1(a, t)))
+
+        def _min_span(toks: list[str], q: list[str]) -> int:
+            """Smallest title window containing every query token; 0 if any is absent."""
+            need = set(q)
+            if not need:
+                return 0
+            pos: dict[str, list[int]] = {t: [] for t in need}
+            for k, t in enumerate(toks):
+                if t in pos:
+                    pos[t].append(k)
+            if any(not v for v in pos.values()):
+                return 0
+            ptr = {t: 0 for t in need}
+            best = 10 ** 9
+            while True:
+                cur = [pos[t][ptr[t]] for t in need]
+                lo, hi = min(cur), max(cur)
+                best = min(best, hi - lo + 1)
+                t_lo = next(t for t in need if pos[t][ptr[t]] == lo)
+                ptr[t_lo] += 1
+                if ptr[t_lo] >= len(pos[t_lo]):
+                    return best
+
+        def proximity_bucket(qid: str, iid: str) -> float:
+            """How tightly the query's tokens cluster in the title, bucketed by slack.
+
+            Meilisearch ranks by proximity and stops discriminating past distance 3, so
+            the buckets are cut at slack 0 / 1 / <=3 / more rather than left continuous.
+            Continuous signals have lost every time they were placed against the low-id
+            prior; a bucketed one partitions instead of displacing.
+            """
+            q = qtoks_stripped[qid]
+            s = _min_span(_norm(iid).split(), q)
+            if s == 0:
+                return 0.0
+            slack = s - len(q)
+            return 3.0 if slack == 0 else (2.0 if slack == 1 else (1.0 if slack <= 3 else 0.5))
+
         def last_token_position(qid: str, iid: str) -> float:
             """Bucketed offset of the LAST query token; a 5th key level below first-token.
 
@@ -443,16 +551,22 @@ def main():
     # in the blend. The conditional never evaluates the real name when ft_bonus is 0.
     ft_score = first_token_position if args.ft_bonus else (lambda qid, iid: 0.0)
     idf_score = idf_token_position if args.idf_bonus else (lambda qid, iid: 0.0)
+    pt_score = prefix_typo_position if args.pt_bonus else (lambda qid, iid: 0.0)
+    px_score = proximity_bucket if args.px_bonus else (lambda qid, iid: 0.0)
+    _any_bonus = (args.pos_bonus or args.ft_bonus or args.idf_bonus
+                  or args.pt_bonus or args.px_bonus)
 
     def blended(lam: float) -> dict[str, list[str]]:
         out: dict[str, list[str]] = {}
         for qid in qids:
-            if args.pos_bonus or args.ft_bonus or args.idf_bonus:
+            if _any_bonus:
                 scored = [
                     (lam * ce[(qid, iid)] + (1 - lam) * priors[qid][iid] / rrf_max
                      + args.pos_bonus * match_position(qid, iid)
                      + args.ft_bonus * ft_score(qid, iid)
-                     + args.idf_bonus * idf_score(qid, iid), iid)
+                     + args.idf_bonus * idf_score(qid, iid)
+                     + args.pt_bonus * pt_score(qid, iid)
+                     + args.px_bonus * px_score(qid, iid), iid)
                     for iid in pools[qid]
                 ]
             else:
