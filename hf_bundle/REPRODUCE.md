@@ -2,8 +2,11 @@
 
 Final public leaderboard: **0.69413 nDCG@10** (local full-benchmark **0.694591**).
 
-This bundle contains the cached cross-encoder scores and the depth-1000 retrieval runs,
-which is everything the post-retrieval pipeline consumes.
+This bundle contains the cached cross-encoder scores and the retrieval runs TRUNCATED TO
+TOP-100, which is everything the post-retrieval pipeline consumes at the shipped depth.
+The pipeline unions the top 100 of each run, so the truncation is lossless for the command
+below. Note the consequence: this bundle supports `--depths 100 100` only. A deeper setting
+would silently build a SMALLER pool rather than error, so do not change those numbers.
 Model weights are NOT needed to regenerate the submission, only to re-score from scratch.
 
 ## Steps
@@ -81,6 +84,6 @@ catalog.
 
 | path | what it is |
 |---|---|
-| `runs/bm25_all.jsonl` | BM25 retrieval, depth 1000, all 29,014 queries |
-| `runs/dense_lora_v1_all.jsonl` | dense retrieval, depth 1000, all 29,014 queries |
+| `runs/bm25_all.jsonl` | BM25 retrieval, truncated to top-100, all 29,014 queries |
+| `runs/dense_lora_v1_all.jsonl` | dense retrieval, truncated to top-100, all 29,014 queries |
 | `data/cache/rerank_...v7synth...parquet` | cross-encoder scores for all 4,827,501 depth-100 pool pairs |

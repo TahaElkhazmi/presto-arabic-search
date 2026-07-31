@@ -1,6 +1,6 @@
 """Export TRAINING-query pools for teacher scoring (phase 3 step 4).
 
-Per PHASE3_DISTILLATION_PLAN.md section 2.3: for each of the 82,140 unique
+For each of the 82,140 unique
 training queries, candidates = top --top-n of the RRF fusion (2:1, k=10) of the
 BM25 and dense training-query runs, plus every provided positive for that query
 injected. Candidates are deduped by raw product NAME (the teacher scores

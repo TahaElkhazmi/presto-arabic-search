@@ -1,4 +1,4 @@
-"""Own nDCG@10 evaluator, implemented from the spec in COMPETITION_GUIDE.md section 2.
+"""Own nDCG@10 evaluator, implemented from the competition metric specification.
 
 Cross-checked against the official data/benchmark/evaluate.py; both must agree to 4
 decimals on an identical run file before any number from here is trusted.

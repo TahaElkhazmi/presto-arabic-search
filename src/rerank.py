@@ -1,6 +1,6 @@
 """Cross-encoder reranking of retrieval candidate pools with an RRF prior blend.
 
-Pipeline per PHASE2_PLAN.md section 2:
+Pipeline (described in TECHNICAL_REPORT.md sections 4-5):
   1. candidate pool per query = union of the top --depth ids from each input run
      (default intent: BM25 top-100 union dense top-100, ~200 dedup candidates).
   2. every (query, candidate) pair is scored by the seq-cls Qwen3 reranker with the

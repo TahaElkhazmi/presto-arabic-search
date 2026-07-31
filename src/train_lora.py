@@ -1,6 +1,6 @@
 """LoRA contrastive fine-tune of the official checkpoint (build order step 4).
 
-Spec per COMPETITION_GUIDE.md:
+Spec:
   - CachedMultipleNegativesRankingLoss (GradCache), effective batch 64, mini-batch 8
   - triplets from pairs_with_negatives train split, false negatives filtered
     (normalized negative name == normalized positive name)
@@ -147,7 +147,7 @@ def main():
 
     # Merge at the state-dict level in float32 and verify from disk; both the
     # PeftModel object-graph route and bf16 merging failed silently (see
-    # merge_adapter.py docstring and FINDINGS.md).
+    # merge_adapter.py docstring).
     merge(BASE, adapter_dir, merged_dir)
 
 

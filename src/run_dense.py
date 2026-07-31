@@ -1,6 +1,6 @@
 """Dense retrieval with the (fine-tuned) Qwen3 embedding model.
 
-Traps handled per COMPETITION_GUIDE.md section 6:
+Traps handled:
   - queries are embedded with the stored instruction prompt (prompt_name="query")
   - documents are embedded raw (the stored "document" prompt is the empty string)
   - pooling/attention come from the checkpoint; do not override

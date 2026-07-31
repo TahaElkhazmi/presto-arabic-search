@@ -14,7 +14,7 @@ product family - which a canonical grade-3 listing would not carry.
 FEATURES (all oriented so higher score = more "grade-3-like", i.e. LESS residual content):
   F1  IDF-weighted count of title tokens absent from the query (continuous). Different
       quantity from the raw title/query LENGTH RATIO on the dead list (-0.008 to -0.018,
-      EXTERNAL_BRAINSTORM_PROMPT.md #18): that was unweighted length; this is IDF-weighted
+      the closed-negatives list): that was unweighted length; this is IDF-weighted
       residual content. NOTE: probe_residual_text.py already computed an IDF residual sum,
       but scoped to the saturated-containment tie group of a zero-cohort sample - a
       different, coarser population than the 4-level decision cell used here.
@@ -36,7 +36,7 @@ METHOD: screen at the exact decision cell - pool candidates sharing identical
 low-id fallback currently decides (see src/probe_grade_separation.py and
 src/probe_cell_geometry.py, whose id-neighbourhood screen at this same cell definition,
 over the full pool, is the source of the 0.6976 binary anchor quoted in
-EXTERNAL_BRAINSTORM_PROMPT.md #29). AUC pairs are formed ONLY within a query's own cell(s)
+the closed-negatives list). AUC pairs are formed ONLY within a query's own cell(s)
 - never across queries - then pooled into one concordance rate, exactly matching the
 established pattern in probe_grade_separation.py / probe_cell_geometry.py (that is what
 "AUC within each query, never pooled across queries" means operationally in this codebase:

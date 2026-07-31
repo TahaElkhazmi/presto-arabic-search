@@ -4,7 +4,7 @@ Writes the same ranking in both run formats:
   runs/<name>.csv    submission format (query_id,product_id)
   runs/<name>.jsonl  official evaluate.py format
 
-Per COMPETITION_GUIDE.md fact 1, this should score ~0.2407 nDCG@10 on the first
+This should score ~0.2407 nDCG@10 on the first
 1,000 queries.
 """
 

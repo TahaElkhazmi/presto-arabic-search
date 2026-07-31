@@ -1,4 +1,4 @@
-"""Deterministic text features for the tabular stacker (PHASE4_PLAN section 2).
+"""Deterministic text features for the tabular stacker (see TECHNICAL_REPORT.md section 6).
 
 Two feature families that the neural signals miss:
   - multi-scale character n-grams (n=2,3,4): Jaccard + containment, for typo /

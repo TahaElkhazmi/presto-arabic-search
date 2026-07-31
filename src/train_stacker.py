@@ -6,7 +6,7 @@ positives, and non-positive candidates at fused survivor rank <= 3 get row
 weight 0 (the 2026-07-18 contamination finding: 38% of top-3 pool slots are
 unlabeled positives, so training them as negatives repeats the v3 failure).
 
-Feature schema = PHASE4_PLAN section 2 (30 features). CE features come from a
+Feature schema: 30 features (see stacker_features.py). CE features come from a
 rerank score cache parquet (--ce-cache); with --dry-run and no cache, a dummy CE
 column is used so the whole pipeline (features, weights, groups, booster) can be
 verified before the ~4h GPU CE-scoring pass exists.

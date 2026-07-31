@@ -1,6 +1,6 @@
 """Cross-encoder reranker fine-tune: Qwen3-Reranker-0.6B-seq-cls + LoRA (phase 2 step A).
 
-Design per PHASE2_PLAN.md section 3.A and the model card:
+Design (see TECHNICAL_REPORT.md section 5) and the model card:
   - pairs are (formatted query, formatted document) with BinaryCrossEntropyLoss;
     label 1 = provided positive, label 0 = provided hard negative plus one random
     catalog negative per query (training only on hard negatives is known to break
