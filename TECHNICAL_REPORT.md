@@ -70,6 +70,7 @@ Fixed, seeded splits: a 5,802-query validation set used for reporting and gating
 This let us *measure* dev-set argmax inflation rather than speculate about it: across five independent campaigns, the development-split argmax overstated the population effect by a consistent factor of roughly 3-4x (examples: +0.0054 dev shrank to +0.0028 benchmark; +0.0090 to +0.0024; +0.0027 to +0.0007).
 Small slices were also demonstrated to err in both directions: a 500-query screen read a genuine +0.0032 effect as -0.0011 (false negative), and a 5,802-query validation read once endorsed an effect the full benchmark then refuted (false positive).
 Standing rules derived from these measurements: never trust a single-slice argmax; require interior (bracketed-on-both-sides) optima before validating; prefer consensus configurations from the top-k of a grid over the raw argmax; and reserve a final "untouched remainder" of the benchmark (never used by any tuning wave) as the cleanest proxy for the private split.
+One further rule was added late and retired an earlier one: a candidate retained because it was positive on *both* halves of a held-out pool has been selected using both halves, so neither remains independent. Section 6.1 shows this rule passing pure noise and gives the counterexample that retired it. Candidates are now confirmed on an out-of-sample slice - the benchmark minus the tuning pool minus the untouched arbiter, 18,218 queries - which costs nothing to evaluate and leaves the arbiter unspent.
 
 ### 3.3 Gates and kill criteria
 
@@ -243,7 +244,7 @@ We consider these as informative as the positive path; each entry states the hyp
 15. **Ensemble re-test under the final key** - the five ensemble failures of entry 7 were all measured in an earlier era when the blend leaned much harder on the cross-encoder (blend weight 0.60 versus 0.50 at the end), so the verdict was re-taken across 40 configurations including a previously untried three-way mixture and both probability- and logit-space averaging.
    Every configuration was null or negative and monotone in the partner's weight; the optimum remains exactly zero.
 
-### 6.1 A fourth estimator failure: global discrimination is not cell discrimination
+### 6.1 Estimator failures four and five: cell conditioning, and the limits of split agreement
 
 Our metric awards gains of `2^grade - 1`, so a grade-3 item is worth seven times a grade-1, yet every screen we had ever run used relevant-versus-irrelevant as its target.
 Asking instead which signal separates grade 3 from grade 2, over 17,578 grade-differing pairs inside our own shipped top-10, produced the strongest global result we had seen: the cross-encoder score achieved 0.7225 AUC against the incumbent low-id prior's 0.6287, on a task it was never trained for, and the near-tie re-sort is precisely where the pipeline discards it.
@@ -252,12 +253,20 @@ Conditioning on the cell where the decision is actually taken reverses it comple
 Restricted to pairs where containment, match-position, first-token and last-token all tie - the residual cell in which the fallback decides - the cross-encoder scores 0.4783 and the low-id prior 0.7100, a gap of **-0.2317** against the challenger.
 The cross-encoder's grade signal is almost entirely consumed by the text levels above it; what survives three levels of lexical filtering is not something it can separate.
 
-This is the fourth distinct way our feature screen has been wrong, and the progression is the part worth transferring:
+This is the fourth distinct way our feature screen has been wrong. A fifth followed, and it is the most consequential because it invalidated our acceptance rule rather than a single candidate.
+
+**The fifth failure: agreement across held-out halves is not evidence.** Our standing practice was to tune on one half of a held-out pool and retain a candidate if it was positive on both halves. That rule passes pure noise. We demonstrated it twice. First by simulation: three conditional-key configurations all cleared the bar, and a random-partition null - shuffling class membership while holding cell sizes fixed, over 200 draws - reproduced every one of them. Then by counterexample on real data, which is the stronger demonstration: a joint re-fit of three post-processing constants measured +0.000779 on the tuning half and +0.000435 on the confirming half, and **-0.000253 out-of-sample** on 18,218 queries that took no part in selecting it. A second candidate, a confidence-gated protection of the blend's head, measured +0.000117 on the confirming half at t +0.96 and +0.000023 out-of-sample, changing 7 of 18,218 queries. The mechanism is simple once stated: the confirming half stops being independent the moment it is used inside the selection rule, which is exactly what "retain if positive on both halves" does.
+
+The replacement is an out-of-sample slice defined as the benchmark minus the tuning pool minus the untouched arbiter - 18,218 queries - which is free to evaluate, far tighter than either half, and leaves the arbiter unspent. We also now state, for any sweep, how many cells would clear the bar under pure noise: a 16-cell sweep expects about four cells positive on both halves by chance, so a sweep returning two has found nothing.
+
+The full progression is the part worth transferring:
 (1) standalone AUC, ignoring that a discrete feature partitions rather than displaces;
 (2) combined-key AUC, ignoring coverage - the highest edge we ever measured, +0.625, was worthless at 0.5% coverage;
 (3) predictiveness, ignoring whether the pipeline already consumes the signal upstream;
-(4) global AUC on a new target, without conditioning on the decision cell.
-Ten features have now been beaten by the ascending-product-id fallback at that cell, which we read as evidence that the incumbent prior is genuinely well matched to this catalog rather than as ten near-misses.
+(4) global AUC on a new target, without conditioning on the decision cell;
+(5) sign agreement across held-out halves, when one of those halves was used to select the candidate.
+
+Twenty-six features have now been beaten by the ascending-product-id fallback at that cell, sixteen of them in campaigns run after the first draft of this report. We read that as evidence that the incumbent prior is genuinely well matched to this catalog rather than as twenty-six near-misses, and the margin supports it: the features that actually reach the cell in volume lose by an accuracy edge of -0.06 to -0.16, not by a hair. The clearest single case is duplicate-name multiplicity, which correlates only -0.08 with product id and is therefore genuinely new information, and still loses by -0.16.
 
 ---
 
