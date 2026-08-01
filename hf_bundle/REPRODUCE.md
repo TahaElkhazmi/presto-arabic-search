@@ -52,6 +52,7 @@ python -c "import hashlib;print(hashlib.sha256(open('runs/reproduction.csv','rb'
 ```
 
 Expected: `42b5ded221786d6cbcb8696f8d775a92ece3d82e38cc9c65cd9981a3860767c3`
+
 The local-to-leaderboard offset is -0.00046, consistent with the -0.001 +- 0.0014 calibration
 that held across all eighteen submissions.
 
