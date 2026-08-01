@@ -44,9 +44,14 @@ python src/eval_ndcg.py --run runs/reproduction.csv
 
 Expected: `nDCG@10 = 0.694591`, `queries_missing_from_run = 0`.
 
-`runs/reproduction.csv` is byte-identical to the submitted `runs/submission_v7synth_stack5.csv`
-(verified by sha256 `42b5ded221786d6cbcb8696f8d775a92ece3d82e38cc9c65cd9981a3860767c3`), whose
-public leaderboard score is 0.69413.
+`runs/reproduction.csv` is byte-identical to the submitted `runs/submission_v7synth_stack5.csv`,
+whose public leaderboard score is 0.69413. Check it yourself rather than taking it on trust:
+
+```
+python -c "import hashlib;print(hashlib.sha256(open('runs/reproduction.csv','rb').read()).hexdigest())"
+```
+
+Expected: `42b5ded221786d6cbcb8696f8d775a92ece3d82e38cc9c65cd9981a3860767c3`
 The local-to-leaderboard offset is -0.00046, consistent with the -0.001 +- 0.0014 calibration
 that held across all eighteen submissions.
 

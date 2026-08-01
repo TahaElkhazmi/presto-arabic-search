@@ -94,6 +94,16 @@ Expected: `nDCG@10 = 0.694591`, `queries_missing_from_run = 0`.
 That file is byte-identical to the submitted `runs/submission_v7synth_stack5.csv`,
 whose public leaderboard score is **0.69413** (local minus 0.00046).
 
+You do not have to take that on trust. `runs/reproduction.csv` must hash to:
+
+```
+42b5ded221786d6cbcb8696f8d775a92ece3d82e38cc9c65cd9981a3860767c3
+```
+
+```bash
+./.venv/Scripts/python.exe -c "import hashlib;print(hashlib.sha256(open('runs/reproduction.csv','rb').read()).hexdigest())"
+```
+
 ### Reproducing the earlier submissions too
 
 Each shipped submission is the same command with fewer post-processing options, so any
