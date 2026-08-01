@@ -258,13 +258,16 @@ message.
 The post-processing constants were fitted with these, each on its own single-use
 pristine split; all are cache-only and CPU-only:
 
+All of these live in [`experiments/`](experiments/), not `src/`, because none of them is on
+the reproduction path.
+
 | Script | Fits |
 |---|---|
-| `grid_search_v7synth{,_ext,_ext2}.py` | temperature, blend weight, band widths, confidence threshold |
-| `grid_search_prior{,_ext}.py` | RRF decay `k` and lexical:dense ratio |
-| `validate_v7synth_recal.py`, `validate_prior_recal.py` | val + full-benchmark + untouched-remainder confirmation |
-| `loss_autopsy.py` | per-query error decomposition against the pool oracle |
-| `grid_search_ensemble.py`, `mini_probes_v7.py` | the closing negative results |
+| `experiments/grid_search_v7synth{,_ext,_ext2}.py` | temperature, blend weight, band widths, confidence threshold |
+| `experiments/grid_search_prior{,_ext}.py` | RRF decay `k` and lexical:dense ratio |
+| `experiments/validate_v7synth_recal.py`, `experiments/validate_prior_recal.py` | val + full-benchmark + untouched-remainder confirmation |
+| `experiments/loss_autopsy.py` | per-query error decomposition against the pool oracle |
+| `experiments/grid_search_ensemble.py`, `experiments/mini_probes_v7.py` | the closing negative results |
 
 Splits are seeded and committed under `splits/`, so re-running reproduces the numbers in
 the technical report exactly.
@@ -276,11 +279,21 @@ the technical report exactly.
 ```
 retrieval   BM25 top-100 (normalized Arabic, ascending-id tie-break)
           + Qwen3-Embedding-0.6B + LoRA, top-100 (instruction prompt on queries only)
-fusion      weighted RRF, k=60, lexical:dense = 3:1
+fusion      weighted RRF, k=60, lexical:dense = 3:1  ->  pool ~166, prior / rrf_max = 4/61
 reranker    Qwen3-Reranker-0.6B-seq-cls, 3-stage LoRA fine-tune, seq len 160
-calibration temperature T=2.6 (delogit / T / re-sigmoid)
-blend       0.60 * CE + 0.40 * normalized RRF prior
-bands       eps=0.010, widening to 0.040 when CE top1-top5 margin < 0.15
-in-band key char-3gram query-in-name containment (11 dialect fillers stripped),
-            then ascending product id
+calibration temperature T=3.2 (delogit / T / re-sigmoid; monotone, so it rescales
+            the gaps and never reorders the model's own ranking)
+blend       0.50 * CE + 0.50 * normalized RRF prior
+          + 0.35 * match-position   + 0.05 * first-token-position
+          + 0.05 * highest-IDF-token-position
+          + 0.05 * prefix/typo-position + 0.04 * proximity-bucket
+bands       eps=0.030, widening to 0.050 when the CE top1-top3 margin < 0.10,
+            and 0.080 over ranks 1-5
+in-band key char-3gram containment (11 dialect fillers stripped) -> match position
+            -> first-token position -> last-token position -> ascending product id
 ```
+
+These are the values in the section 1 command, which regenerates the submitted file.
+The earlier two-level key and the T=2.6 / 0.60-0.40 / eps 0.010 settings shown in older
+drafts are the fifth regression anchor above (local 0.667745, public 0.66738), not the
+shipped configuration.
