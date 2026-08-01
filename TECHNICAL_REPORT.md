@@ -342,7 +342,7 @@ We are happy to walk the review team through exactly which numbers were fitted t
 An earlier version of this report attributed **45.5%** of that to the graded distinction, i.e. to placing grade 3 above grade 2 rather than relevant above irrelevant. That figure was an artefact of how the binary oracle was computed and we correct it here rather than leave it standing.
 The binary oracle originally re-sorted the relevant class by ascending product id, which discards the ordering our own blend produced inside that class. But no discrete feature in this system is ever deployed that way: the cascade sorts by `(-feature, +id)`, so a binary signal PARTITIONS the list and the existing order survives inside each class - the same estimator point developed in Section 5.7. Scored as a partition, the binary oracle is 0.766600 rather than 0.740764, and the graded share of the reorder headroom is **15.4%, not 45.7%**.
 
-The corrected decomposition, all of it reproducible from `src/probe_headroom_autopsy.py`:
+The corrected decomposition, all of it reproducible from `experiments/probe_headroom_autopsy.py`:
 
 | oracle over our own top-10 | nDCG@10 | gain |
 |---|---|---|
@@ -359,7 +359,7 @@ We prefer to state that than to keep a larger number that happened to flatter th
 The system is tuned to this catalog's duplicate structure and id-grade correlation; portability of those priors is an empirical question.
 Roughly 8% of queries still score zero despite a 0.76 pool ceiling on those queries - the residual is concentrated exactly where relevance is decided by information absent from short product names.
 
-**Reproducibility.** The repository contains every training, scoring and evaluation script on the reproduction path, fixed seeds for every split, and the exact command line for the final submission, together with five regression anchors that re-derive earlier leaderboard entries from the same bundle; total compute for the entire project was under ~100 GPU-hours on a single 8 GB laptop GPU plus 39 minutes of free-tier cloud GPU for one probe.
+**Reproducibility.** `src/` contains every training, scoring and evaluation script on the reproduction path - 22 files, of which 5 suffice to regenerate the submitted run from the cached scores - alongside fixed seeds for every split, the exact command line for the final submission, and five regression anchors that re-derive earlier leaderboard entries from the same bundle. `experiments/` holds the 117 one-off measurement scripts behind the experimental record, including every negative result reported here; total compute for the entire project was under ~100 GPU-hours on a single 8 GB laptop GPU plus 39 minutes of free-tier cloud GPU for one probe.
 
 ---
 
@@ -367,10 +367,10 @@ Roughly 8% of queries still score zero despite a 0.76 pool ceiling on those quer
 
 Team **Looooop Gain03**:
 
-- **Ahmed** - lexical retrieval (BM25 indexing, Arabic normalization, tie-break handling).
+- **Ahmed** - lexical retrieval (BM25 indexing and Arabic normalization).
 - **Najm** - dense retrieval (bi-encoder fine-tuning, corpus embedding, ANN search).
-- **Taha** - cross-encoder re-ranking, the calibrated blend and post-processing cascade, and the
-  evaluation methodology described in Section 3.
+- **Taha** - the low-product-id tie-break, cross-encoder re-ranking, the calibrated blend and
+  post-processing cascade, and the evaluation methodology described in Section 3.
 
 ---
 

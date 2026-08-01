@@ -5,6 +5,11 @@ e-commerce product search.
 Final public leaderboard: **0.69413 nDCG@10** (team Looooop Gain03), across eighteen
 submissions each predicted in advance to within +-0.0014 by the local harness.
 
+| Directory | Contents |
+|---|---|
+| [`src/`](src/) | The system: 23 scripts on the reproduction and training path. Section 1 below regenerates the submitted file from 5 of them. |
+| [`experiments/`](experiments/) | 116 one-off measurement scripts behind the experimental record, including every negative result. Not on the reproduction path - see [`experiments/README.md`](experiments/README.md). |
+
 | Document | Contents |
 |---|---|
 | [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) | The full writeup: architecture, evaluation methodology, the positive path, nineteen diagnosed negative results, design rationale and compliance disclosures. **Read this first.** |

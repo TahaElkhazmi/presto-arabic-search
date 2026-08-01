@@ -27,6 +27,13 @@ Output: data/teacher/synthetic_curriculum_groups.parquet (cols query, docs, labe
 consumed by train_reranker.py --loss lambda --groups-parquet.
 """
 
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import argparse
 import random
 import re

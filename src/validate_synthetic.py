@@ -5,6 +5,13 @@ residual label contamination on synthetic queries whose text exactly matches a
 benchmark query (qrels for MEASUREMENT ONLY, per rule 2.4.b discipline).
 """
 
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 import re
 import sys
 from pathlib import Path
