@@ -82,16 +82,26 @@ Expensive steps were ordered so that cheap measurements could kill bad ideas ear
 ## 4. System Architecture
 
 ```mermaid
-flowchart LR
-    Q[query] --> B[BM25 over normalized names<br/>low-id tie-break]
-    Q --> D[Qwen3-Embedding-0.6B + LoRA<br/>dense retrieval]
-    B -->|top-100| F[RRF fusion<br/>k=60, lexical:dense 3:1]
+flowchart TB
+    Q[query] --> S[dialect-filler stripping<br/>11 Libyan tokens, key features only]
+    Q --> B[BM25 Okapi k1=1.5 b=0.75<br/>normalized names, low-id tie-break]
+    Q --> D[Qwen3-Embedding-0.6B + LoRA r=16<br/>dense retrieval]
+    B -->|top-100| F[weighted RRF<br/>k=60, lexical:dense 3:1]
     D -->|top-100| F
-    F --> CE[Qwen3-Reranker-0.6B, three-stage fine-tune<br/>temperature-calibrated T=2.6]
-    CE --> BL[blend: 0.60*CE + 0.40*prior]
-    BL --> PP[adaptive near-tie bands eps 0.010/0.040<br/>char-3gram containment key, dialect-stripped<br/>low-id ties]
-    PP --> Out[top-10]
+    F --> P[candidate pool<br/>union ~166/query]
+    P --> CE[Qwen3-Reranker-0.6B<br/>three-stage fine-tune<br/>temperature T=3.2]
+    P --> PR[normalized RRF prior<br/>divided by rrf_max = 4/61]
+    CE --> BL
+    PR --> BL
+    S --> BL
+    BL["blend = 0.50*CE + 0.50*prior<br/>+ 0.35*match_pos + 0.05*first_tok<br/>+ 0.05*idf_tok + 0.05*prefix_typo + 0.04*proximity"]
+    BL --> BAND[adaptive near-tie band<br/>eps 0.030, widened to 0.050 when CE top1-top3 &lt; 0.10<br/>eps 0.080 over ranks 1-5]
+    BAND --> KEY[re-sort each chain by the 5-level key<br/>cont3 &rarr; match_pos &rarr; first_tok &rarr; last_tok &rarr; ascending id]
+    KEY --> Out[top-10]
 ```
+
+Every constant shown is the one in the submitted command; the five regression anchors in the
+README re-derive earlier leaderboard entries from this same diagram by removing terms.
 
 ### 4.1 Candidate generation
 
@@ -117,9 +127,11 @@ For scale reference, a zero-shot 4B model of the same family scores 0.554: two w
 
 ### 4.3 Calibrated blending and post-processing
 
-The re-ranker's raw sigmoid scores are temperature-recalibrated (delogit / T / re-sigmoid, T=2.6) and blended with the fusion prior: final = 0.60 x CE + 0.40 x prior.
+The re-ranker's raw sigmoid scores are temperature-recalibrated (delogit / T / re-sigmoid, T=3.2) and blended with the fusion prior and five bounded lexical bonus terms: final = 0.50 x CE + 0.50 x prior + 0.35 x match-position + 0.05 x first-token-position + 0.05 x highest-IDF-token-position + 0.05 x prefix/typo-position + 0.04 x proximity-bucket.
+The bonus terms exist because a signal used only as a tie-break key can reorder candidates *within* a near-tie chain but never *between* chains; adding the same signal to the score itself is a second, genuinely different role (Section 5.8).
 An adaptive near-tie mechanism then re-sorts low-information score regions: consecutive blend scores whose gap is below eps are chain-grouped and re-ordered by char-3gram query-in-name containment (computed after stripping an ablated set of eleven Libyan-dialect filler tokens from the query), with ascending id as the final key.
-The band width is confidence-adaptive: eps=0.010 normally, widening to 0.040 when the re-ranker's top1-top5 margin falls below 0.15.
+The band width is confidence-adaptive: eps=0.030 normally, widening to 0.050 when the re-ranker's top1-top3 margin falls below 0.10, and set to 0.080 over ranks 1-5 because nDCG@10 weights rank 1 at 1.000 against rank 9 at 0.315.
+Inside a chain the order is a five-level lexicographic key: char-3gram containment, then match position, then first-token position, then last-token position, then ascending product id.
 Every constant in this paragraph was fitted on a pristine split against the *final* model and verified on the untouched benchmark remainder (Section 7.1 explains why re-fitting them mattered so much).
 
 ---
@@ -347,13 +359,18 @@ We prefer to state that than to keep a larger number that happened to flatter th
 The system is tuned to this catalog's duplicate structure and id-grade correlation; portability of those priors is an empirical question.
 Roughly 8% of queries still score zero despite a 0.76 pool ceiling on those queries - the residual is concentrated exactly where relevance is decided by information absent from short product names.
 
-**Reproducibility.** The repository contains every training, scoring, grid-search, and validation script referenced here, a dated findings log of every experiment (positive and negative), fixed seeds for every split, and the exact command line for the final submission; total compute for the entire project was under ~100 GPU-hours on a single 8 GB laptop GPU plus 39 minutes of free-tier cloud GPU for one probe.
+**Reproducibility.** The repository contains every training, scoring and evaluation script on the reproduction path, fixed seeds for every split, and the exact command line for the final submission, together with five regression anchors that re-derive earlier leaderboard entries from the same bundle; total compute for the entire project was under ~100 GPU-hours on a single 8 GB laptop GPU plus 39 minutes of free-tier cloud GPU for one probe.
 
 ---
 
 ## 9. Team Contributions
 
-[TO BE COMPLETED BY THE TEAM - per-member roles, responsibilities, and key contributions.]
+Team **Looooop Gain03**:
+
+- **Ahmed** - lexical retrieval (BM25 indexing, Arabic normalization, tie-break handling).
+- **Najm** - dense retrieval (bi-encoder fine-tuning, corpus embedding, ANN search).
+- **Taha** - cross-encoder re-ranking, the calibrated blend and post-processing cascade, and the
+  evaluation methodology described in Section 3.
 
 ---
 
