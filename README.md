@@ -16,9 +16,10 @@ submissions each predicted in advance to within +-0.0014 by the local harness.
 | This file | How to set up, run and reproduce the system. |
 
 Model weights and a zero-GPU reproduction bundle live in a companion Hugging Face
-repository, `TahaElkhazmi/presto-arabic-search-models`, because they are too large for
-git. Its `audit-bundle/REPRODUCE.md` reproduces the submitted file without a GPU and
-without model weights; the same instructions are mirrored at
+repository, **[LooooopGain/presto-arabic-search-models01](https://huggingface.co/LooooopGain/presto-arabic-search-models01)**,
+because they are too large for git. Its `audit-bundle/REPRODUCE.md` reproduces the
+submitted file without a GPU and without model weights, and prints a sha256 you can
+check; the same instructions are mirrored at
 [`hf_bundle/REPRODUCE.md`](hf_bundle/REPRODUCE.md).
 
 ---
